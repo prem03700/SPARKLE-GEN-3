@@ -1,0 +1,12 @@
+{
+  "name": "sparkle-gen-3",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SPARKLE GEN-3 frontend prototype and modular architecture scaffold",
+  "scripts": {
+    "start": "python3 -m http.server 4173",
+    "test": "node --test",
+    "check": "node --check src/app.js && node --check src/core/agent-registry.js && node --check src/core/action-policy.js && node --check src/core/contracts.js && node --check src/core/ui-state.js && node --check src/integrations/registry.js"
+  }
+}

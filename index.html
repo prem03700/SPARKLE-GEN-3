@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f7f4">
+  <title>SPARKLE GEN-3 — Personal Workspace</title>
+  <link rel="stylesheet" href="./src/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="Main navigation">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true">s</div>
+        <div class="brand-copy"><strong>SPARKLE</strong><span>GEN—3</span></div>
+        <button class="icon-button sidebar-collapse" id="collapseSidebar" aria-label="Collapse sidebar" title="Collapse sidebar">⇤</button>
+      </div>
+      <button class="workspace-switcher" id="workspaceSwitcher"><span class="workspace-dot"></span><span><strong>Personal workspace</strong><small>Local preview</small></span><span class="chevron">⌄</span></button>
+      <button class="new-chat-button" id="newChat"><span>＋</span> New conversation</button>
+      <div class="nav-label">WORKSPACES</div>
+      <nav class="primary-nav" id="primaryNav">
+        <button class="nav-item active" data-view="chat" data-assistant="main"><span class="nav-icon">◌</span><span class="nav-text">Main assistant</span><kbd>⌘ 1</kbd></button>
+        <button class="nav-item" data-view="research" data-assistant="research"><span class="nav-icon">⌕</span><span class="nav-text">Research</span></button>
+        <button class="nav-item" data-view="learning" data-assistant="learning"><span class="nav-icon">↗</span><span class="nav-text">Learning & skills</span></button>
+        <button class="nav-item" data-view="coding" data-assistant="coding"><span class="nav-icon">⌘</span><span class="nav-text">Coding & IDE</span></button>
+        <button class="nav-item" data-view="projects" data-assistant="projects"><span class="nav-icon">▦</span><span class="nav-text">Projects</span></button>
+        <button class="nav-item" data-view="lab" data-assistant="rd"><span class="nav-icon">⚗</span><span class="nav-text">R&D lab</span></button>
+      </nav>
+      <div class="nav-label history-label">RECENT</div>
+      <div class="history-list" id="historyList">
+        <button class="history-item active-history">GEN-3 architecture notes</button>
+        <button class="history-item">Robot dynamics revision</button>
+        <button class="history-item">Python mastery plan</button>
+      </div>
+      <div class="sidebar-bottom">
+        <button class="nav-item" data-view="knowledge"><span class="nav-icon">▤</span><span class="nav-text">Knowledge</span></button>
+        <button class="nav-item" data-view="tasks"><span class="nav-icon">☷</span><span class="nav-text">Tasks & goals</span></button>
+        <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span><span class="nav-text">Settings</span></button>
+        <div class="profile-row"><div class="avatar">P</div><div class="profile-copy"><strong>Personal account</strong><small>Frontend preview</small></div><button class="icon-button" id="profileMenu" aria-label="Account menu">···</button></div>
+      </div>
+    </aside>
+    <main class="main-panel">
+      <header class="topbar">
+        <button class="icon-button mobile-menu" id="mobileMenu" aria-label="Open navigation">☰</button>
+        <div class="breadcrumbs"><span id="breadcrumbWorkspace">Main assistant</span><span class="crumb-sep">/</span><span id="breadcrumbPage">Conversation</span></div>
+        <div class="topbar-actions"><span class="preview-pill"><span></span> Frontend preview</span><button class="icon-button" id="themeToggle" title="Toggle light/dark theme" aria-label="Toggle theme">◐</button><button class="icon-button" id="openThemeStudio" title="Customize appearance" aria-label="Customize appearance">◒</button></div>
+      </header>
+      <section id="viewRoot" class="view-root" aria-live="polite"></section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <div class="mobile-scrim" id="mobileScrim"></div>
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>
