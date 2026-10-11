@@ -54,3 +54,24 @@ test("action proposals are reviewable and approval-gated", () => {
   assert.equal(result.value.status, "proposed");
   assert.equal(result.value.approvalRequired, true);
 });
+
+
+test("every integration remains disabled and approval-gated", () => {
+  assert.ok(INTEGRATION_REGISTRY.length > 0);
+  for (const integration of INTEGRATION_REGISTRY) {
+    assert.equal(integration.status, "disabled", `${integration.id} must stay disabled`);
+    assert.equal(integration.requiresApproval, true, `${integration.id} must require approval`);
+  }
+});
+
+test("frontend source does not invoke network or dynamic-code APIs", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const root = resolve(import.meta.dirname, "..");
+  const files = ["index.html", "src/app.js", "src/core/action-policy.js", "src/core/agent-registry.js", "src/core/contracts.js", "src/core/handoff-service.js", "src/core/ui-state.js", "src/integrations/registry.js"];
+  const forbidden = /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|eval|Function)\s*\(/;
+  for (const file of files) {
+    const source = await readFile(resolve(root, file), "utf8");
+    assert.equal(forbidden.test(source), false, `${file} must not make network calls or evaluate dynamic code`);
+  }
+});
