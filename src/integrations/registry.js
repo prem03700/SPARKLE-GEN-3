@@ -1,6 +1,5 @@
 /** Intended integrations. All remain disconnected until separately approved. */
 export const INTEGRATION_REGISTRY = Object.freeze([
-  Object.freeze({id:"llm-provider",category:"models",status:"disabled",requiresApproval:true}),
   Object.freeze({id:"web-research",category:"research",status:"disabled",requiresApproval:true}),
   Object.freeze({id:"persistent-storage",category:"storage",status:"disabled",requiresApproval:true}),
   Object.freeze({id:"code-runner",category:"execution",status:"disabled",requiresApproval:true,isolationRequired:true}),

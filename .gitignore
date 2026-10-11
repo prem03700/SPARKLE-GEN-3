@@ -5,3 +5,8 @@ node_modules/
 dist/
 coverage/
 .DS_Store
+
+# Private runtime data and Python caches
+data/
+__pycache__/
+*.py[cod]
