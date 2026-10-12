@@ -4,6 +4,8 @@ import socket
 import subprocess
 import sys
 import ssl
+import sqlite3
+import urllib.error
 import tempfile
 import threading
 import time
@@ -40,6 +42,29 @@ class PrivateServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "250 KB"):
             server.extract_document_text("large.docx", b"x" * 250_001)
 
+    @unittest.skipUnless((Path.home() / ".local/opt/sparkle-ocr/usr/bin/tesseract").is_file() and Path("/usr/bin/pdftoppm").is_file(), "local OCR tools are not available")
+    def test_scanned_pdf_uses_bounded_local_ocr_fallback(self):
+        calls = []
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs))
+            if command[0] == "/usr/bin/pdftotext":
+                return subprocess.CompletedProcess(command, 0, stdout=b"")
+            if command[0] == "/usr/bin/pdftoppm":
+                from PIL import Image
+                Path(command[-1] + "-1.png").write_bytes(b"fixture image; renderer mocked")
+                return subprocess.CompletedProcess(command, 0, stdout=b"")
+            if command[0].endswith("/tesseract"):
+                return subprocess.CompletedProcess(command, 0, stdout=b"Scanned robotics notes and joint torque.")
+            raise AssertionError("unexpected subprocess command")
+        with patch("subprocess.run", side_effect=fake_run):
+            extracted = server.extract_document_text("scanned-notes.pdf", b"%PDF-1.7\nfixture")
+        self.assertIn("OCR-extracted text", extracted)
+        self.assertIn("Scanned robotics notes", extracted)
+        render = next(command for command, _ in calls if command[0] == "/usr/bin/pdftoppm")
+        self.assertEqual(render[render.index("-l") + 1], "5", "OCR must be bounded to five pages")
+        self.assertEqual(render[render.index("-r") + 1], "150", "OCR rendering must use bounded resolution")
+        self.assertTrue(any(command[0].endswith("/tesseract") for command, _ in calls))
+
     def test_document_extraction_endpoint_requires_pairing_and_validates_payload(self):
         self.assertEqual(self.request("/api/knowledge/extract", "POST",
                                       {"filename": "notes.docx", "content_base64": "UEsDBA=="})[0], 401)
@@ -72,6 +97,69 @@ class PrivateServerTests(unittest.TestCase):
         self.assertIn("extension=.docx", event["summary"])
         self.assertNotIn("Private extracted fixture text", event["summary"])
 
+    def test_knowledge_ranker_weights_title_matches_and_excludes_unrelated_notes(self):
+        notes = [
+            {"title": "Robotics kinematics", "content": "Forward kinematics maps joints to pose.", "createdAt": "2026-10-01"},
+            {"title": "General scratchpad", "content": ("robotics kinematics " * 30) + "miscellaneous notes", "createdAt": "2026-10-11"},
+            {"title": "Garden planning", "content": "Tomatoes need sunlight and soil.", "createdAt": "2026-10-12"},
+        ]
+        ranked = server.rank_knowledge_notes("robotics kinematics", notes, limit=2)
+        self.assertEqual(len(ranked), 2)
+        self.assertEqual(ranked[0]["title"], "Robotics kinematics", "title and exact phrase relevance should outweigh repeated body terms")
+        self.assertNotIn("Garden planning", [item["title"] for item in ranked])
+        self.assertEqual(server.rank_knowledge_notes("unrelated orbital mechanics", notes), [])
+
+    def test_local_semantic_knowledge_search_caches_vectors_and_returns_note_ids(self):
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        con.execute("CREATE TABLE knowledge_embeddings(note_id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, embedding_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        notes = [
+            {"id": "robot-note", "title": "Robot joint movement", "content": "Actuator torque moves robot joints through kinematic chains.", "createdAt": "2026-10-10"},
+            {"id": "garden-note", "title": "Garden soil", "content": "Tomatoes need water and sunlight.", "createdAt": "2026-10-11"},
+        ]
+        def fake_embeddings(texts):
+            def vec(text):
+                lower = text.lower()
+                if "robot" in lower or "actuator" in lower or "kinematic" in lower:
+                    return [1.0, 0.0, 0.0] + [0.0] * 29
+                if "water" in lower or "tomato" in lower or "garden" in lower:
+                    return [0.0, 1.0, 0.0] + [0.0] * 29
+                return [0.9, 0.1, 0.0] + [0.0] * 29
+            return [vec(text) for text in texts]
+        with patch("server._local_embeddings", side_effect=fake_embeddings) as embed:
+            result = server.semantic_search_knowledge(con, "How do robot actuators move joints?", notes)
+            self.assertEqual(result["mode"], "local-semantic")
+            self.assertEqual(result["results"][0]["id"], "robot-note")
+            self.assertNotIn("garden-note", [item["id"] for item in result["results"]])
+            first_call_count = embed.call_count
+            cached = server.semantic_search_knowledge(con, "How do robot actuators move joints?", notes)
+            self.assertEqual(cached["results"][0]["id"], "robot-note")
+            self.assertEqual(embed.call_count, first_call_count + 1, "the second search should embed only the new query")
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM knowledge_embeddings").fetchone()[0], 2)
+        con.close()
+
+    def test_local_semantic_knowledge_search_falls_back_to_lexical_when_local_model_unavailable(self):
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        con.execute("CREATE TABLE knowledge_embeddings(note_id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, embedding_json TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        notes = [{"id": "n1", "title": "Robot kinematics", "content": "Joint pose calculation", "createdAt": "2026-10-10"}]
+        with patch("server._local_embeddings", side_effect=urllib.error.URLError("local embedding service unavailable")):
+            result = server.semantic_search_knowledge(con, "robot kinematics", notes)
+        self.assertEqual(result["mode"], "lexical-fallback")
+        self.assertEqual(result["results"][0]["id"], "n1")
+        con.close()
+
+    def test_knowledge_semantic_search_endpoint_requires_pairing_and_returns_mode(self):
+        self.assertEqual(self.request("/api/knowledge/search", "POST", {"query": "robot movement"})[0], 401)
+        _, setup = self.request("/api/setup-code", "POST", {})
+        _, paired = self.request("/api/pair", "POST", {"code": setup["code"], "name": "semantic search test"})
+        with patch("server.semantic_search_knowledge", return_value={"results": [{"id": "note-1", "title": "Robot", "content": "Moves", "score": 0.8}], "mode": "local-semantic", "considered_notes": 1}) as search:
+            status, result = self.request("/api/knowledge/search", "POST", {"query": "robot movement", "limit": 10}, paired["token"])
+        self.assertEqual(status, 200)
+        self.assertEqual(result["mode"], "local-semantic")
+        self.assertEqual(result["results"][0]["id"], "note-1")
+        search.assert_called_once()
+
     def test_chat_context_does_not_inject_unrelated_saved_notes(self):
         messages, memory_used = server.build_chat_context(
             "main", [{"role": "user", "content": "Explain robotics kinematics"}],
@@ -86,6 +174,41 @@ class PrivateServerTests(unittest.TestCase):
         self.assertIn("Forward kinematics", system)
         self.assertNotIn("Shopping list", system)
         self.assertEqual(messages[-1]["content"], "Explain robotics kinematics")
+
+    def test_opted_in_chat_memory_uses_semantic_retrieval_before_model_call(self):
+        _, setup = self.request("/api/setup-code", "POST", {})
+        _, paired = self.request("/api/pair", "POST", {"code": setup["code"], "name": "semantic memory test"})
+        with server.database() as con:
+            row = server.read_workspace(con)
+            data = row["data"]
+            data["knowledge"] = [{"id": "semantic-chat-note", "title": "Joint torque fundamentals", "content": "Actuator current creates torque that opposes external load.", "createdAt": "2026-10-10"}]
+            preferences = dict(row["preferences"]); preferences["memoryEnabled"] = True
+            con.execute("UPDATE workspace SET data_json=?,prefs_json=?,revision=revision+1 WHERE id=1",
+                        (json.dumps(data), json.dumps(preferences)))
+        semantic_result = {"results": [{"id": "semantic-chat-note", "title": "Joint torque fundamentals", "content": "Actuator current creates torque that opposes external load.", "score": 0.72}], "mode": "local-semantic", "considered_notes": 1}
+        captured = {}
+        def model(messages):
+            captured["messages"] = messages
+            return "The actuator creates joint torque."
+        with patch("server.semantic_search_knowledge", return_value=semantic_result) as retrieval, patch("server.request_model", side_effect=model):
+            status, result = self.request("/api/chat", "POST", {"agent": "main", "messages": [{"role": "user", "content": "Why does the arm resist motion?"}]}, paired["token"])
+        self.assertEqual(status, 200)
+        self.assertTrue(result["memory_used"])
+        self.assertIn("Joint torque fundamentals", captured["messages"][0]["content"])
+        self.assertIn("opposes external load", captured["messages"][0]["content"])
+        retrieval.assert_called_once()
+
+    def test_chat_context_accepts_explicitly_semantic_ranked_notes_without_lexical_overlap(self):
+        messages, memory_used = server.build_chat_context(
+            "main", [{"role": "user", "content": "Why does the robot arm resist movement?"}],
+            memory_enabled=True, knowledge=[{
+                "id": "semantic-note", "title": "Joint torque fundamentals",
+                "content": "Actuator current creates torque that opposes external load.", "score": 0.71,
+            }], knowledge_pre_ranked=True,
+        )
+        self.assertTrue(memory_used)
+        self.assertIn("Joint torque fundamentals", messages[0]["content"])
+        self.assertIn("opposes external load", messages[0]["content"])
 
     def test_chat_context_has_no_recent_note_fallback_when_nothing_matches(self):
         messages, memory_used = server.build_chat_context(
@@ -186,6 +309,10 @@ class PrivateServerTests(unittest.TestCase):
             self.assertIn("default-src 'self'", csp)
             self.assertIn("object-src 'none'", csp)
             self.assertIn("frame-ancestors 'none'", csp)
+            self.assertIn("img-src 'self' data: blob:", csp)
+            self.assertIn("media-src 'self' blob:", csp)
+            self.assertIn("connect-src 'self' ws: wss:", csp)
+            self.assertIn("microphone=(self)", response.headers.get("Permissions-Policy", ""))
             self.assertEqual(response.headers.get("Cache-Control"), "no-cache")
         with urlopen(self.base + "/api/health", timeout=4) as response:
             self.assertEqual(response.headers.get("Cache-Control"), "no-store")
@@ -195,8 +322,8 @@ class PrivateServerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.old_data_dir, self.old_db_path = server.DATA_DIR, server.DB_PATH
         self.old_code, self.old_created = server.PAIR_CODE, server.PAIR_CREATED
-        self.old_pair_attempts, self.old_chat_limits, self.old_research_limits = dict(server.PAIR_ATTEMPTS), dict(server.CHAT_LIMITS), dict(server.RESEARCH_LIMITS)
-        server.PAIR_ATTEMPTS.clear(); server.CHAT_LIMITS.clear(); server.RESEARCH_LIMITS.clear()
+        self.old_pair_attempts, self.old_chat_limits, self.old_research_limits, self.old_core_proposal_limits = dict(server.PAIR_ATTEMPTS), dict(server.CHAT_LIMITS), dict(server.RESEARCH_LIMITS), dict(server.CORE_PROPOSAL_LIMITS)
+        server.PAIR_ATTEMPTS.clear(); server.CHAT_LIMITS.clear(); server.RESEARCH_LIMITS.clear(); server.CORE_PROPOSAL_LIMITS.clear()
         server.DATA_DIR = Path(self.temp.name)
         server.DB_PATH = Path(self.temp.name) / "test.sqlite3"
         server.initialize()
@@ -215,6 +342,7 @@ class PrivateServerTests(unittest.TestCase):
         server.PAIR_ATTEMPTS.clear(); server.PAIR_ATTEMPTS.update(self.old_pair_attempts)
         server.CHAT_LIMITS.clear(); server.CHAT_LIMITS.update(self.old_chat_limits)
         server.RESEARCH_LIMITS.clear(); server.RESEARCH_LIMITS.update(self.old_research_limits)
+        server.CORE_PROPOSAL_LIMITS.clear(); server.CORE_PROPOSAL_LIMITS.update(self.old_core_proposal_limits)
         self.temp.cleanup()
 
     def request(self, path, method="GET", payload=None, token=None):
@@ -237,6 +365,72 @@ class PrivateServerTests(unittest.TestCase):
             status = exc.code
             exc.close()
             return status, data
+
+    def test_personal_core_proposals_are_authenticated_durable_and_never_execute(self):
+        self.assertEqual(self.request("/api/core/proposals")[0], 401)
+        self.assertEqual(self.request("/api/core/proposals", "POST", {
+            "action_type": "create_task", "title": "Unauthenticated proposal"
+        })[0], 401)
+        _, setup = self.request("/api/setup-code", "POST", {})
+        status, paired = self.request("/api/pair", "POST", {
+            "code": setup["code"], "name": "Personal Core proposal test"
+        })
+        self.assertEqual(status, 201)
+        token = paired["token"]
+        status, invalid = self.request("/api/core/proposals", "POST", {
+            "action_type": "unknown_action", "title": "Not allowed"
+        }, token)
+        self.assertEqual(status, 400)
+        status, malformed_type = self.request("/api/core/proposals", "POST", {
+            "action_type": ["shell_execution"], "title": "Must be rejected"
+        }, token)
+        self.assertEqual(status, 400)
+        status, created = self.request("/api/core/proposals", "POST", {
+            "action_type": "shell_execution", "title": "Run command",
+            "details": "This stays disabled."
+        }, token)
+        self.assertEqual(status, 201)
+        self.assertFalse(created["executed"])
+        proposal = created["proposal"]
+        self.assertEqual(proposal["status"], "proposed")
+        self.assertEqual(proposal["action_type"], "shell_execution")
+        status, listed = self.request("/api/core/proposals", token=token)
+        self.assertEqual(status, 200)
+        self.assertFalse(listed["execution_enabled"])
+        self.assertEqual(listed["proposals"][0]["id"], proposal["id"])
+        status, decision = self.request(
+            f"/api/core/proposals/{proposal['id']}/decision", "POST",
+            {"decision": "approved"}, token,
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(decision["executed"])
+        self.assertEqual(decision["status"], "approved")
+        status, repeated = self.request(
+            f"/api/core/proposals/{proposal['id']}/decision", "POST",
+            {"decision": "rejected"}, token,
+        )
+        self.assertEqual(status, 409)
+        status, listed = self.request("/api/core/proposals", token=token)
+        self.assertEqual(listed["proposals"][0]["status"], "approved")
+        status, task_proposal = self.request("/api/core/proposals", "POST", {
+            "action_type": "create_task", "title": "Explicitly approved task",
+            "details": "Created only after approval",
+        }, token)
+        self.assertEqual(status, 201)
+        status, task_decision = self.request(
+            f"/api/core/proposals/{task_proposal['proposal']['id']}/decision", "POST",
+            {"decision": "approved"}, token,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(task_decision["executed"])
+        self.assertEqual(task_decision["execution_result"]["collection"], "tasks")
+        status, snapshot = self.request("/api/data", token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual(len([item for item in snapshot["data"]["tasks"] if item["title"] == "Explicitly approved task"]), 1)
+        _, audit = self.request("/api/audit", token=token)
+        events = [item["event_type"] for item in audit["events"]]
+        self.assertIn("core.proposal.created", events)
+        self.assertIn("core.proposal.decided", events)
 
     def test_private_boundaries_and_static_file_allowlist(self):
         self.assertEqual(self.request("/")[0], 200)
@@ -360,6 +554,104 @@ class PrivateServerTests(unittest.TestCase):
         event = next(item for item in audit["events"] if item["event_type"] == "research.search")
         self.assertIn("query_length=", event["summary"])
         self.assertNotIn(query, event["summary"])
+
+    def test_public_web_search_parses_bounded_results_and_source_retrieval_extracts_text(self):
+        from urllib.parse import urlparse
+        class FakeResponse:
+            def __init__(self, body, content_type="text/html; charset=utf-8"):
+                self.body = body.encode("utf-8")
+                self.headers = {"Content-Type": content_type}
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self, limit=-1): return self.body[:limit]
+        class FakeOpener:
+            def __init__(self, response): self.response = response
+            def open(self, request, timeout=0): return self.response
+        search_html = '<div class="result"><a class="result__a" href="https://example.edu/paper">Robotics <b>study</b></a><a class="result__snippet">A useful evidence snippet.</a></div>'
+        with patch("server.urllib.request.build_opener", return_value=FakeOpener(FakeResponse(search_html))), \
+             patch("server._public_https_url", side_effect=lambda value: urlparse(value) if value.startswith("https://") else None):
+            results = server.search_public_web("robotics evidence")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["title"], "Robotics study")
+        self.assertIn("useful evidence snippet", results[0]["snippet"])
+        self.assertEqual(results[0]["domain"], "example.edu")
+        source_id = results[0]["source_id"]
+        page_html = '<html><head><title>Robotics paper</title><meta name="author" content="A. Researcher"><meta name="citation_publication_date" content="2026-05-10"><meta name="citation_doi" content="10.1234/robotics"><meta name="description" content="Paper abstract"></head><body><nav>Menu</nav><main><p>We evaluate a robotics method on three datasets.</p><p>Results have limitations.</p><script>secret tracking</script></main></body></html>'
+        with patch("server.urllib.request.build_opener", return_value=FakeOpener(FakeResponse(page_html))), \
+             patch("server._resolve_public_https_url", side_effect=lambda value: (urlparse(value), "93.184.216.34") if value.startswith("https://") else None):
+            source = server.retrieve_public_source(source_id)
+        self.assertIn("Robotics paper", source["title"])
+        self.assertIn("evaluate a robotics method", source["text"])
+        self.assertNotIn("secret tracking", source["text"])
+        self.assertIn("unverified", source["verification_note"])
+        self.assertEqual(source["metadata"].get("author"), "A. Researcher")
+        self.assertEqual(source["metadata"].get("published"), "2026-05-10")
+        self.assertEqual(source["metadata"].get("doi"), "10.1234/robotics")
+
+    def test_public_web_search_requires_pairing_and_keeps_query_out_of_audit(self):
+        query = "private robotics research phrase"
+        self.assertEqual(self.request("/api/research/web-search", "POST", {"query": query})[0], 401)
+        _, setup = self.request("/api/setup-code", "POST", {})
+        status, paired = self.request("/api/pair", "POST", {"code": setup["code"], "name": "web research test"})
+        self.assertEqual(status, 201)
+        fixture = [{"source_id": "abcdefghijklmnopqrstuvwxyz", "title": "Public source", "url": "https://example.edu/paper", "domain": "example.edu", "snippet": "Fixture snippet", "quality_hint": "academic or government domain"}]
+        with patch("server.search_public_web", return_value=fixture) as search:
+            status, result = self.request("/api/research/web-search", "POST", {"query": query}, paired["token"])
+        self.assertEqual(status, 200)
+        self.assertEqual(result["provider"], "Public web search")
+        self.assertEqual(result["results"][0]["domain"], "example.edu")
+        search.assert_called_once_with(query)
+        _, audit = self.request("/api/audit", token=paired["token"])
+        event = next(item for item in audit["events"] if item["event_type"] == "research.web_search")
+        self.assertIn("query_length=", event["summary"])
+        self.assertNotIn(query, event["summary"])
+
+    def test_public_source_retrieval_requires_cached_search_result_and_is_authenticated(self):
+        source_id = "abcdefghijklmnopqrstuvwxyz"
+        self.assertEqual(self.request("/api/research/fetch", "POST", {"source_id": source_id})[0], 401)
+        _, setup = self.request("/api/setup-code", "POST", {})
+        _, paired = self.request("/api/pair", "POST", {"code": setup["code"], "name": "source retrieval test"})
+        with patch("server.retrieve_public_source", return_value={"title": "Fixture source", "url": "https://example.org/source", "domain": "example.org", "text": "Readable evidence excerpt", "truncated": False, "verification_note": "Unverified source"}) as retrieve:
+            status, result = self.request("/api/research/fetch", "POST", {"source_id": source_id}, paired["token"])
+        self.assertEqual(status, 200)
+        self.assertIn("Readable evidence excerpt", result["text"])
+        retrieve.assert_called_once_with(source_id)
+        with patch("server.retrieve_public_source") as retrieve:
+            status, result = self.request("/api/research/fetch", "POST", {"source_id": "not a source id"}, paired["token"])
+        self.assertEqual(status, 400)
+        retrieve.assert_not_called()
+
+    def test_public_source_url_validator_rejects_private_hosts_and_non_https(self):
+        for url in ("http://example.com/page", "https://127.0.0.1/secret", "https://localhost/", "https://192.168.1.2/", "https://user:pass@example.com/"):
+            self.assertIsNone(server._public_https_url(url), url)
+        with patch("server.socket.getaddrinfo", return_value=[(None, None, None, None, ("10.0.0.2", 443))]):
+            self.assertIsNone(server._public_https_url("https://rebind.example/path"))
+
+    def test_python_rd_sweep_endpoint_requires_pairing_and_returns_bounded_results(self):
+        status, denied = self.request("/api/rd/sweep", "POST", {
+            "model": "pendulum", "parameter": "damping", "values": [0, .15, .35, .7, 1.2]
+        })
+        self.assertEqual(status, 401)
+        _, setup = self.request("/api/setup-code", "POST", {})
+        status, paired = self.request("/api/pair", "POST", {
+            "code": setup["code"], "name": "Python simulation test"
+        })
+        self.assertEqual(status, 201)
+        token = paired["token"]
+        payload = {"model": "pendulum", "parameter": "damping",
+                   "values": [0, .15, .35, .7, 1.2],
+                   "base": {"gravity": 9.81, "length": 1.6, "angle": 30}}
+        status, result = self.request("/api/rd/sweep", "POST", payload, token)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["engine"], "SPARKLE Python deterministic model")
+        self.assertEqual(len(result["results"]), 5)
+        self.assertTrue(all(row["steps"] == 1800 for row in result["results"]))
+        status, invalid = self.request("/api/rd/sweep", "POST",
+            {**payload, "values": [0, .1]}, token)
+        self.assertEqual(status, 400)
+        self.assertIn("exactly five", invalid["error"])
+        _, audit = self.request("/api/audit", token=token)
+        self.assertTrue(any(event["event_type"] == "rd.experiment_sweep" for event in audit["events"]))
 
     def test_crossref_search_validates_query_before_network_request(self):
         _, setup = self.request("/api/setup-code", "POST", {})
@@ -678,6 +970,241 @@ class PrivateServerTests(unittest.TestCase):
         finally:
             server.MODEL_PROVIDER, server.MODEL, server.NVIDIA_API_KEY = old
 
+
+    def test_authenticated_image_generation_persists_private_artifact_without_prompt_logging(self):
+        self.assertEqual(self.request("/api/images/generate", "POST", {"prompt": "a red robot"} )[0], 401)
+        _, setup = self.request("/api/setup-code", "POST", {})
+        _, paired = self.request("/api/pair", "POST", {"code": setup["code"], "name": "image test"})
+        status, invalid = self.request("/api/images/generate", "POST", {"prompt": "x"}, paired["token"])
+        self.assertEqual(status, 400)
+        self.assertIn("3–1000", invalid["error"])
+        fixture = b"\x89PNG\r\n\x1a\nprivate-image-fixture"
+        with patch("server.request_generated_image", return_value=(fixture, "image/png", ".png")):
+            status, result = self.request("/api/images/generate", "POST", {"prompt": "a red robot"}, paired["token"])
+        self.assertEqual(status, 201)
+        self.assertRegex(result["id"], r"^[0-9a-f]{32}$")
+        self.assertEqual(result["mime_type"], "image/png")
+        self.assertEqual(self.request("/api/images/" + result["id"])[0], 401)
+        req = Request(self.base + "/api/images/" + result["id"],
+                      headers={"Authorization": "Bearer " + paired["token"]})
+        with urlopen(req, timeout=4) as response:
+            self.assertEqual(response.headers.get("Content-Type"), "image/png")
+            self.assertEqual(response.read(), fixture)
+        _, audit = self.request("/api/audit", token=paired["token"])
+        event = next(item for item in audit["events"] if item["event_type"] == "image.generated")
+        self.assertIn("bytes=", event["summary"])
+        self.assertNotIn("a red robot", event["summary"])
+        self.assertEqual(self.request("/api/images/" + result["id"], "DELETE")[0], 401)
+        self.assertEqual(self.request("/api/images/" + result["id"], "DELETE", token=paired["token"])[0], 200)
+        self.assertEqual(self.request("/api/images/" + result["id"], token=paired["token"])[0], 404)
+
+    def test_image_provider_adapter_uses_server_key_and_rejects_bad_image_payloads(self):
+        import base64
+        old_key = server.NVIDIA_API_KEY
+        try:
+            server.NVIDIA_API_KEY = "fixture-image-key"
+            image = b"\x89PNG\r\n\x1a\nimage"
+            class FakeResponse:
+                headers = {}
+                def __enter__(self): return self
+                def __exit__(self, *args): return False
+                def read(self, limit=-1): return json.dumps({"data":[{"b64_json":base64.b64encode(image).decode()}]}).encode()
+            captured = {}
+            class FakeOpener:
+                def open(self, request, timeout):
+                    captured["url"] = request.full_url
+                    captured["authorization"] = request.get_header("Authorization")
+                    captured["payload"] = json.loads(request.data.decode())
+                    captured["timeout"] = timeout
+                    return FakeResponse()
+            with patch("server.urllib.request.build_opener", return_value=FakeOpener()):
+                data, mime, extension = server.request_generated_image("a clean test image")
+            self.assertEqual(data, image)
+            self.assertEqual((mime, extension), ("image/png", ".png"))
+            self.assertEqual(captured["url"], server.NVIDIA_IMAGE_URL)
+            self.assertEqual(captured["authorization"], "Bearer fixture-image-key")
+            self.assertEqual(captured["payload"]["model"], server.NVIDIA_IMAGE_MODEL)
+            self.assertEqual(captured["timeout"], 120)
+            class BadResponse(FakeResponse):
+                def read(self, limit=-1): return json.dumps({"data":[{"b64_json":"bm90YW5pbWFnZQ=="}]}).encode()
+            with patch("server.urllib.request.build_opener", return_value=type("Opener", (), {"open": lambda self, request, timeout: BadResponse()})()):
+                with self.assertRaisesRegex(ValueError, "unsupported image format"):
+                    server.request_generated_image("a clean test image")
+        finally:
+            server.NVIDIA_API_KEY = old_key
+
+    def test_realtime_voice_offer_is_disabled_by_default_and_private_host_only(self):
+        self.assertFalse(server.valid_private_voicechat_url(""))
+        self.assertTrue(server.valid_private_voicechat_url("http://127.0.0.1:9000/api/offer"))
+        self.assertTrue(server.valid_private_voicechat_url("https://[::1]:9000/api/offer"))
+        self.assertTrue(server.valid_private_voicechat_url("ws://127.0.0.1:8080/v1/realtime"))
+        self.assertTrue(server.valid_private_voicechat_url("wss://192.168.1.20:8080/v1/realtime"))
+        self.assertFalse(server.valid_private_voicechat_url("wss://example.com/v1/realtime"))
+        self.assertFalse(server.valid_private_voicechat_url("ws://127.0.0.1:99999/v1/realtime"))
+        self.assertFalse(server.valid_private_voicechat_url("https://example.com/api/offer"))
+        self.assertFalse(server.valid_private_voicechat_url("http://user:pass@127.0.0.1:9000/api/offer"))
+        self.assertEqual(self.request("/api/voice/offer", "POST", {"sdp": "v=0\r\n"} )[0], 401)
+        _, setup = self.request("/api/setup-code", "POST", {})
+        _, paired = self.request("/api/pair", "POST", {"code": setup["code"], "name": "voice test"})
+        old_url, old_token = server.VOICECHAT_URL, server.VOICECHAT_TOKEN
+        try:
+            server.VOICECHAT_URL = ""
+            status, disabled = self.request("/api/voice/offer", "POST", {"sdp": "v=0\r\n"}, paired["token"])
+            self.assertEqual(status, 503)
+            server.VOICECHAT_URL = "http://127.0.0.1:9000/api/offer"
+            server.VOICECHAT_TOKEN = "voice-fixture-token"
+            answer_sdp = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
+            class FakeResponse:
+                headers = {"Content-Type": "application/sdp"}
+                def __enter__(self): return self
+                def __exit__(self, *args): return False
+                def read(self, limit=-1): return answer_sdp.encode()
+            captured = {}
+            class FakeOpener:
+                def open(self, request, timeout):
+                    captured["url"] = request.full_url
+                    captured["authorization"] = request.get_header("Authorization")
+                    captured["body"] = request.data.decode()
+                    captured["timeout"] = timeout
+                    return FakeResponse()
+            with patch("server.urllib.request.build_opener", return_value=FakeOpener()):
+                status, result = self.request("/api/voice/offer", "POST", {"sdp": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"}, paired["token"])
+            self.assertEqual(status, 200, result)
+            self.assertEqual(result["sdp"], answer_sdp)
+            self.assertEqual(captured["url"], server.VOICECHAT_URL)
+            self.assertEqual(captured["authorization"], "Bearer voice-fixture-token")
+            self.assertIn("v=0", captured["body"])
+            self.assertEqual(captured["timeout"], 25)
+        finally:
+            server.VOICECHAT_URL, server.VOICECHAT_TOKEN = old_url, old_token
+
+    def test_optional_voice_configuration_requires_owner_only_file_permissions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "gen3.env"
+            path.write_text("SPARKLE_VOICECHAT_URL=http://127.0.0.1:9000/api/offer\nSPARKLE_VOICECHAT_TOKEN=private-fixture\n", encoding="utf-8")
+            with patch.dict(os.environ, {"SPARKLE_VOICECHAT_URL": "", "SPARKLE_VOICECHAT_TOKEN": ""}):
+                os.chmod(path, 0o600)
+                self.assertEqual(server.load_private_runtime_value("SPARKLE_VOICECHAT_URL", path), "http://127.0.0.1:9000/api/offer")
+                self.assertEqual(server.load_private_runtime_value("SPARKLE_VOICECHAT_TOKEN", path), "private-fixture")
+                os.chmod(path, 0o644)
+                self.assertEqual(server.load_private_runtime_value("SPARKLE_VOICECHAT_URL", path), "")
+
+    def test_authenticated_realtime_voice_websocket_relay(self):
+        import base64
+        import hashlib
+        old_url, old_token = server.VOICECHAT_URL, server.VOICECHAT_TOKEN
+        upstream_listener = socket.socket()
+        upstream_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        upstream_listener.bind(("127.0.0.1", 0))
+        upstream_listener.listen(1)
+        upstream_port = upstream_listener.getsockname()[1]
+        server.VOICECHAT_URL = f"ws://127.0.0.1:{upstream_port}/v1/realtime"
+        server.VOICECHAT_TOKEN = "upstream-fixture-token"
+        upstream_events = []
+        upstream_done = threading.Event()
+        upstream_errors = []
+
+        def read_headers(conn):
+            raw = bytearray()
+            while not raw.endswith(b"\r\n\r\n") and len(raw) < 16384:
+                item = conn.recv(1)
+                if not item: break
+                raw.extend(item)
+            return bytes(raw)
+
+        def upstream_server():
+            conn = None
+            try:
+                conn, _ = upstream_listener.accept()
+                conn.settimeout(4)
+                request = read_headers(conn).decode("iso-8859-1")
+                upstream_events.append(("authorization", next((line.split(":",1)[1].strip() for line in request.split("\r\n") if line.lower().startswith("authorization:")), "")))
+                key = next(line.split(":",1)[1].strip() for line in request.split("\r\n") if line.lower().startswith("sec-websocket-key:"))
+                accept = base64.b64encode(hashlib.sha1((key+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+                conn.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "+accept+"\r\n\r\n").encode())
+                conn.sendall(server._server_websocket_frame(json.dumps({"type":"session.created","session":{"id":"fixture"}}).encode()))
+                opcode, payload = server._read_client_websocket_frame(conn, 16384)
+                upstream_events.append(("session", json.loads(payload.decode())))
+                conn.sendall(server._server_websocket_frame(json.dumps({"type":"session.updated"}).encode()))
+                opcode, payload = server._read_client_websocket_frame(conn, 16384)
+                upstream_events.append(("audio_opcode", opcode))
+                upstream_events.append(("audio", payload))
+                conn.sendall(server._server_websocket_frame(json.dumps({"type":"response.output_audio_transcript.done","transcript":"Hello from fixture"}).encode()))
+                upstream_done.set()
+            except Exception as exc:
+                upstream_errors.append(type(exc).__name__ + ": " + str(exc))
+                upstream_done.set()
+            finally:
+                if conn:
+                    try: conn.close()
+                    except OSError: pass
+                upstream_listener.close()
+
+        thread = threading.Thread(target=upstream_server, daemon=True)
+        thread.start()
+        _, setup = self.request("/api/setup-code", "POST", {})
+        _, paired = self.request("/api/pair", "POST", {"code":setup["code"],"name":"voice websocket test"})
+
+        def masked_frame(payload, opcode=1):
+            payload = bytes(payload)
+            mask = b"abcd"
+            length = len(payload)
+            if length < 126: header = bytes([0x80|opcode,0x80|length])
+            elif length <= 65535: header = bytes([0x80|opcode,0x80|126])+length.to_bytes(2,"big")
+            else: header = bytes([0x80|opcode,0x80|127])+length.to_bytes(8,"big")
+            return header+mask+bytes(value^mask[i%4] for i,value in enumerate(payload))
+
+        def receive_frame(conn):
+            first, second = conn.recv(1), conn.recv(1)
+            if not first or not second: raise ConnectionError("WebSocket closed before expected frame")
+            size=second[0]&0x7f
+            if size==126: size=int.from_bytes(server._socket_read_exact(conn,2),"big")
+            elif size==127: size=int.from_bytes(server._socket_read_exact(conn,8),"big")
+            payload=server._socket_read_exact(conn,size)
+            return first[0]&0x0f,payload
+
+        def browser_socket(token):
+            conn=socket.create_connection(self.httpd.server_address,timeout=4)
+            conn.settimeout(4)
+            key=base64.b64encode(os.urandom(16)).decode()
+            conn.sendall(("GET /api/voice/ws HTTP/1.1\r\nHost: 127.0.0.1:"+str(self.httpd.server_address[1])+"\r\nOrigin: "+self.base+"\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: "+key+"\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+            response=read_headers(conn).decode("iso-8859-1")
+            self.assertIn("101 Switching Protocols",response)
+            conn.sendall(masked_frame(json.dumps({"type":"auth","token":token}).encode()))
+            return conn
+
+        try:
+            self.assertEqual(server.voicechat_transport(),"websocket")
+            self.assertTrue(server.valid_private_voicechat_url(server.VOICECHAT_URL))
+            invalid=browser_socket("z"*48)
+            opcode,payload=receive_frame(invalid)
+            self.assertEqual(opcode,8)
+            self.assertEqual(int.from_bytes(payload[:2],"big"),1008)
+            invalid.close()
+
+            browser=browser_socket(paired["token"])
+            opcode,payload=receive_frame(browser)
+            self.assertEqual(opcode,1)
+            self.assertEqual(json.loads(payload.decode())["type"],"session.created")
+            browser.sendall(masked_frame(json.dumps({"type":"session.update","session":{"tools":[]}}).encode()))
+            opcode,payload=receive_frame(browser)
+            self.assertEqual(json.loads(payload.decode())["type"],"session.updated")
+            browser.sendall(masked_frame(b"pcm16-fixture",opcode=2))
+            opcode,payload=receive_frame(browser)
+            self.assertEqual(json.loads(payload.decode())["transcript"],"Hello from fixture")
+            self.assertTrue(upstream_done.wait(3))
+            self.assertEqual(upstream_events[0],("authorization","Bearer upstream-fixture-token"))
+            self.assertEqual(upstream_events[1][0],"session")
+            self.assertEqual(upstream_events[1][1]["type"],"session.update")
+            self.assertEqual(upstream_events[2],("audio_opcode",2))
+            self.assertEqual(upstream_events[3],("audio",b"pcm16-fixture"))
+            self.assertEqual(upstream_errors,[])
+            browser.close()
+        finally:
+            try: upstream_listener.close()
+            except OSError: pass
+            server.VOICECHAT_URL, server.VOICECHAT_TOKEN = old_url, old_token
+            thread.join(timeout=2)
 
 if __name__ == "__main__":
     unittest.main()

@@ -39,6 +39,8 @@ async function evaluate(expression) {
 
 try {
   cpSync(join(projectRoot, "server.py"), join(serverRoot, "server.py"));
+  cpSync(join(projectRoot, "personal_core.py"), join(serverRoot, "personal_core.py"));
+  cpSync(join(projectRoot, "rd_simulation.py"), join(serverRoot, "rd_simulation.py"));
   cpSync(join(projectRoot, "index.html"), join(serverRoot, "index.html"));
   cpSync(join(projectRoot, "src"), join(serverRoot, "src"), { recursive: true });
   const portProbe = createServer();
@@ -101,8 +103,30 @@ try {
   }
   assert.ok(loaded, "SPARKLE main view should load");
   assert.match(await evaluate("document.title"), /SPARKLE GEN-3/);
-  assert.equal(await evaluate('!!document.querySelector("[data-action=toggle-voice]")'), true, "voice control should render");
+  await evaluate('document.querySelector("[data-view=chat]").click()');
+  assert.equal(await evaluate('!!document.querySelector("[data-action=toggle-voice]")'), true, "voice control should render in the Chat workspace");
+  assert.equal(await evaluate('!!document.querySelector("[data-action=toggle-chat-fullscreen]")'), true, "Chat should offer an in-app full-screen toggle");
+  const normalChatMaxWidth = await evaluate('getComputedStyle(document.querySelector(".chat-layout")).maxWidth');
+  await evaluate('document.querySelector("[data-action=toggle-chat-fullscreen]").click()');
+  assert.equal(await evaluate('document.body.classList.contains("chat-fullscreen")'), true, "full-screen toggle should expand Chat");
+  assert.ok(await evaluate('document.querySelector(".chat-layout").getBoundingClientRect().width >= innerWidth - 30'), "full-screen Chat should use nearly the entire viewport width");
+  await evaluate('document.querySelector("[data-action=toggle-chat-fullscreen]").click()');
+  assert.equal(await evaluate('document.body.classList.contains("chat-fullscreen")'), false, "full-screen toggle should restore the standard workspace");
+  assert.equal(normalChatMaxWidth, "1040px", "standard Chat should use the wider 1040px content limit");
+  await evaluate('document.querySelector("#chatInput").value = Array(8).fill("A longer draft line for composer auto-resize").join("\\n"); document.querySelector("#chatInput").dispatchEvent(new Event("input", { bubbles: true }))');
+  assert.ok(await evaluate('parseFloat(document.querySelector("#chatInput").style.height) > 54'), "composer should grow automatically for multiline drafts");
+  await evaluate('document.querySelector("#chatInput").value = ""; document.querySelector("#chatInput").dispatchEvent(new Event("input", { bubbles: true }))');
   assert.equal(await evaluate('!!document.querySelector("[data-action=export-data]") || (document.querySelector("[data-view=settings]") !== null)'), true, "settings navigation should render");
+  assert.equal(await evaluate('!!document.querySelector("[data-action=toggle-image-mode]")'), true, "image generation mode should be available in Chat");
+  await evaluate('document.querySelector("[data-action=toggle-image-mode]").click()');
+  assert.equal(await evaluate('document.querySelector("[data-action=toggle-image-mode]").getAttribute("aria-pressed")'), "true", "image mode should toggle on accessibly");
+  assert.match(await evaluate('document.querySelector("#chatInput").placeholder'), /image/i, "image mode should update the composer prompt");
+  await evaluate('document.querySelector("[data-action=toggle-image-mode]").click()');
+  assert.equal(await evaluate('document.querySelector("[data-action=toggle-image-mode]").getAttribute("aria-pressed")'), "false", "image mode should toggle off without sending a prompt");
+  const richBlockHTML = await evaluate('import("/src/core/answer-renderer.js").then(m => { const ticks=String.fromCharCode(96).repeat(3); const nl=String.fromCharCode(10); const source=ticks+"sparkle-card"+nl+JSON.stringify({title:"<unsafe>",body:"Safe text"})+nl+ticks; const prepared=m.prepareStructuredAnswer(source); return m.renderPreparedAnswer("<p>"+prepared.text+"</p>",prepared.blocks); })');
+  assert.match(richBlockHTML, /answer-card/, "structured assistant blocks should render in the browser");
+  assert.match(richBlockHTML, /&lt;unsafe&gt;/, "structured assistant block text should be escaped in the browser");
+  assert.equal(await evaluate('import("/src/core/realtime-websocket-voice.js").then(m => typeof m.createRealtimeWebSocketVoiceSession)'), "function", "full-duplex voice module should be served by the private app");
 
   // Verify theme persistence controls, collapsible desktop navigation, and a
   // narrow mobile viewport before exercising application workflows.
@@ -158,14 +182,106 @@ try {
   }
   assert.ok(paired, "browser should pair successfully against the isolated private server");
 
+  const token = await evaluate('localStorage.getItem("sparkle-auth-token")');
+  assert.ok(token, "paired browser should hold a device token");
+
+  // Coding & IDE files are saved in the shared workspace and can be reopened.
+  await evaluate('document.querySelector("[data-view=coding]").click()');
+  await evaluate('document.querySelector("#codeFileName").value = "persistent-smoke.py"; document.querySelector("#codeLanguage").value = "Python"; document.querySelector("#codeEditor").value = '+JSON.stringify("def answer():\n    return 42\n")+'; document.querySelector("[data-action=save-code-file]").click()');
+  let savedCodeFile = null;
+  for (let i = 0; i < 50; i++) {
+    const response = await fetch(baseURL + "/api/data", { headers: { Authorization: "Bearer " + token } });
+    const snapshot = await response.json();
+    savedCodeFile = (snapshot.data.projects || []).find(item => item.kind === "code_file" && item.name === "persistent-smoke.py");
+    if (savedCodeFile) break;
+    await delay(100);
+  }
+  assert.ok(savedCodeFile, "Coding & IDE should persist a named code file to the server workspace");
+  assert.match(savedCodeFile.content, /return 42/);
+  await evaluate('document.querySelector("#codeEditor").value = "unsaved replacement"; document.querySelector("[data-action=load-code-file]").click()');
+  assert.match(await evaluate('document.querySelector("#codeEditor").value'), /return 42/, "opening a saved file should restore its persisted content");
+  await evaluate('document.querySelector("[data-view=projects]").click()');
+  assert.equal(await evaluate('document.querySelector("#viewRoot").innerText.includes("persistent-smoke.py")'), false, "code files should not be misrepresented as project briefs");
+
+  // Personal Core proposals are visible in Settings, persist on the server,
+  // and record approval without executing the proposed operation.
+  await evaluate('document.querySelector("[data-view=settings]").click()');
+  assert.equal(await evaluate('!!document.querySelector("#coreProposalType")'), true, "paired Settings should render the Personal Core proposal form");
+  await evaluate('document.querySelector("#coreProposalType").value = "shell_execution"; document.querySelector("#coreProposalTitle").value = "Browser smoke command proposal"; document.querySelector("#coreProposalDetails").value = "Must remain unexecuted"; document.querySelector("[data-action=create-core-proposal]").click()');
+  let proposalVisible = false;
+  for (let i = 0; i < 50; i++) {
+    proposalVisible = await evaluate('document.body.innerText.includes("Browser smoke command proposal") && document.body.innerText.includes("proposed")');
+    if (proposalVisible) break;
+    await delay(100);
+  }
+  assert.equal(proposalVisible, true, "new proposal should render from the authenticated Python service");
+  const proposalResponse = await fetch(`${baseURL}/api/core/proposals`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(proposalResponse.status, 200, "paired browser should list durable proposals");
+  const proposals = (await proposalResponse.json()).proposals;
+  const proposal = proposals.find(item => item.title === "Browser smoke command proposal");
+  assert.ok(proposal?.id, "proposal should have a durable server-generated ID");
+  await evaluate('window.__proposalOriginalConfirm = window.confirm; window.confirm = () => true; document.querySelector(\'[data-action="decide-core-proposal"][data-decision="approved"]\').click()');
+  let proposalApproved = false;
+  for (let i = 0; i < 50; i++) {
+    const response = await fetch(`${baseURL}/api/core/proposals`, { headers: { Authorization: `Bearer ${token}` } });
+    const current = (await response.json()).proposals.find(item => item.id === proposal.id);
+    if (current?.status === "approved") { proposalApproved = true; break; }
+    await delay(100);
+  }
+  await evaluate('window.confirm = window.__proposalOriginalConfirm; delete window.__proposalOriginalConfirm');
+  assert.equal(proposalApproved, true, "explicit UI approval should be durably recorded");
+  const approvedDecision = await fetch(`${baseURL}/api/core/proposals/${proposal.id}/decision`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ decision: "rejected" }) });
+  assert.equal(approvedDecision.status, 409, "a decided proposal cannot be approved/rejected a second time");
+
+  // Safe record proposals create exactly one durable workspace record only
+  // after the explicit approve click; privileged proposals above stayed inert.
+  await evaluate('document.querySelector("#coreProposalType").value = "create_task"; document.querySelector("#coreProposalTitle").value = "Approved Core task"; document.querySelector("#coreProposalDetails").value = "Created only after explicit approval"; document.querySelector("[data-action=create-core-proposal]").click()');
+  let taskProposalVisible = false;
+  for (let i = 0; i < 50; i++) {
+    taskProposalVisible = await evaluate('document.body.innerText.includes("Approved Core task") && document.body.innerText.includes("proposed")');
+    if (taskProposalVisible) break;
+    await delay(100);
+  }
+  assert.equal(taskProposalVisible, true, "task proposal should be shown before approval");
+  await evaluate('window.__proposalOriginalConfirm = window.confirm; window.confirm = () => true; document.querySelector("[data-action=decide-core-proposal][data-decision=approved]").click()');
+  let coreTaskSaved = false;
+  for (let i = 0; i < 50; i++) {
+    const response = await fetch(baseURL + "/api/data", { headers: { Authorization: "Bearer " + token } });
+    const snapshot = await response.json();
+    coreTaskSaved = snapshot.data.tasks?.filter(item => item.title === "Approved Core task").length === 1;
+    if (coreTaskSaved) break;
+    await delay(100);
+  }
+  await evaluate('window.confirm = window.__proposalOriginalConfirm; delete window.__proposalOriginalConfirm');
+  assert.equal(coreTaskSaved, true, "explicitly approved task proposal should create exactly one SQLite workspace record");
+  await delay(1800);
+  assert.equal(await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}").tasks || []).filter(item => item.title === "Approved Core task").length'), 1, "live workspace polling should deliver the approved task to the open browser");
+
+  // A proposal created from another paired device should appear in Settings
+  // automatically while this screen stays open, without pressing Refresh.
+  const proposalSyncCodeResponse = await fetch(baseURL + "/api/setup-code", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  assert.equal(proposalSyncCodeResponse.status, 200);
+  const proposalSyncCode = (await proposalSyncCodeResponse.json()).code;
+  const proposalSyncPair = await fetch(baseURL + "/api/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: proposalSyncCode, name: "Proposal sync writer" }) });
+  assert.equal(proposalSyncPair.status, 201);
+  const proposalSyncToken = (await proposalSyncPair.json()).token;
+  const remoteProposalResponse = await fetch(baseURL + "/api/core/proposals", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + proposalSyncToken }, body: JSON.stringify({ action_type: "agent_handoff", title: "REMOTE CORE PROPOSAL SENTINEL", details: "Should appear without refresh" }) });
+  assert.equal(remoteProposalResponse.status, 201);
+  let proposalSyncVisible = false;
+  for (let i = 0; i < 70; i++) {
+    proposalSyncVisible = await evaluate('document.body.innerText.includes("REMOTE CORE PROPOSAL SENTINEL")');
+    if (proposalSyncVisible) break;
+    await delay(100);
+  }
+  assert.equal(proposalSyncVisible, true, "another device's proposal should appear in the open Settings queue without refresh");
+
   await evaluate('document.querySelector("[data-view=tasks]").click()');
   await delay(100);
   await evaluate('document.querySelector("[data-action=new-task]").click()');
+  await evaluate('document.querySelector("#appDialogField0").value = "SPARKLE browser smoke task"; document.querySelector("#appDialogField1").value = "Browser persistence smoke test"; document.querySelector("#appDialogForm").requestSubmit()');
   await delay(150);
   let state = await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")');
   assert.ok(state.tasks?.some(task => task.title === "SPARKLE browser smoke task"), "task creation should persist to browser storage");
-  const token = await evaluate('localStorage.getItem("sparkle-auth-token")');
-  assert.ok(token, "paired browser should hold a device token");
   let serverData;
   for (let i = 0; i < 50; i++) {
     const response = await fetch(`${baseURL}/api/data`, { headers: { Authorization: `Bearer ${token}` } });
@@ -176,8 +292,31 @@ try {
   }
   assert.ok(serverData.data.tasks?.some(task => task.title === "SPARKLE browser smoke task"), "task should sync to the server database");
 
+  // A separately paired client writes a newer server revision. The already-open
+  // browser must render it automatically without a reload and update local storage.
+  await delay(250);
+  const secondCodeResponse = await fetch(`${baseURL}/api/setup-code`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  assert.equal(secondCodeResponse.status, 200, "server should issue a fresh code for the second test device");
+  const secondCode = (await secondCodeResponse.json()).code;
+  const secondPairResponse = await fetch(`${baseURL}/api/pair`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: secondCode, name: "Isolated remote sync writer" }) });
+  assert.equal(secondPairResponse.status, 201, "second isolated client should pair");
+  const secondToken = (await secondPairResponse.json()).token;
+  const secondReadResponse = await fetch(`${baseURL}/api/data`, { headers: { Authorization: `Bearer ${secondToken}` } });
+  assert.equal(secondReadResponse.status, 200, "second paired client should read the shared workspace");
+  const remoteWorkspace = await secondReadResponse.json();
+  remoteWorkspace.data.tasks.push({ id: "remote-live-sync-fixture", title: "REMOTE LIVE SYNC SENTINEL", details: "Automatic cross-device refresh acceptance", done: false, createdAt: new Date().toISOString() });
+  const remoteWriteResponse = await fetch(`${baseURL}/api/data`, { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${secondToken}` }, body: JSON.stringify({ data: remoteWorkspace.data, preferences: remoteWorkspace.preferences, revision: remoteWorkspace.revision }) });
+  assert.equal(remoteWriteResponse.status, 200, "second paired client should advance the shared workspace revision");
+  let liveSyncVisible = false;
+  for (let i = 0; i < 30; i++) {
+    liveSyncVisible = await evaluate('document.body.innerText.includes("REMOTE LIVE SYNC SENTINEL") && (JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}").tasks || []).some(task => task.title === "REMOTE LIVE SYNC SENTINEL")');
+    if (liveSyncVisible) break;
+    await delay(100);
+  }
+  assert.equal(liveSyncVisible, true, "a remote device update should render and persist locally without reloading the open browser");
+
   // Exercise goal, learning-plan, project-brief, and R&D draft creation actions.
-  await evaluate('document.querySelector("[data-action=new-goal]").click()');
+  await evaluate('document.querySelector("[data-action=new-goal]").click(); document.querySelector("#appDialogField0").value = "SPARKLE browser smoke task"; document.querySelector("#appDialogField1").value = "Browser persistence smoke test"; document.querySelector("#appDialogForm").requestSubmit()');
   await evaluate('document.querySelector("[data-view=learning]").click(); document.querySelector("#learnTopic").value = "Robot kinematics"; document.querySelector("#learnGoal").value = "Explain forward kinematics"; document.querySelector("[data-action=save-learning]").click()');
   await evaluate('document.querySelector("[data-view=projects]").click(); document.querySelector("#projectName").value = "SPARKLE smoke project"; document.querySelector("#projectOutcome").value = "Verified project persistence"; document.querySelector("#projectCriteria").value = "Saved without auto-creating tasks"; document.querySelector("[data-action=save-project]").click()');
   await evaluate('document.querySelector("[data-view=lab]").click(); document.querySelector("[data-lab-tab=Research]").click(); document.querySelector("#labQuestion").value = "Can this R&D draft persist?"; document.querySelector("#labHypothesis").value = "It should survive sync"; document.querySelector("[data-action=save-lab]").click()');
@@ -198,6 +337,7 @@ try {
   await evaluate('document.querySelector("[data-action=sim-pause]").click()');
   assert.ok(Number(await evaluate('parseFloat(document.querySelector("#simTime").textContent)')) > 0, "live simulation should advance its clock");
   await evaluate('document.querySelector("[data-action=sim-sweep]").click()');
+  for (let i = 0; i < 50 && await evaluate('document.querySelectorAll("#simSweepResults tbody tr").length') !== 5; i++) await delay(50);
   assert.equal(await evaluate('document.querySelectorAll("#simSweepResults tbody tr").length'), 5, "experiment sweep should render five bounded runs");
   await evaluate('document.querySelector("[data-action=sim-save]").click()');
   state = await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")');
@@ -253,12 +393,142 @@ try {
     await delay(100);
   }
   assert.ok(reconnected, "browser should restore its paired session after reload");
+  assert.equal(await evaluate('document.querySelector("#breadcrumbPage").textContent === "Home" && document.querySelector(".nav-item[data-view=home]").classList.contains("active")'), true, "a refreshed browser should open Home as the main page");
   await evaluate('document.querySelector("[data-view=tasks]").click()');
   await delay(100);
   const afterReload = await evaluate('({visible: document.body.innerText.includes("SPARKLE browser smoke task"), saved: (JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}").tasks || []).some(task => task.title === "SPARKLE browser smoke task")})');
   assert.equal(afterReload.visible, true, "saved task should render after page reload");
   assert.equal(afterReload.saved, true, "saved task should remain in browser storage after reload");
 
+  // End-to-end CRUD acceptance for all user-owned saved-record collections.
+  await evaluate(`window.__crudOriginalPrompt = window.prompt; window.__crudOriginalConfirm = window.confirm; window.confirm = () => true; window.__crudPromptQueue = []; window.__crudDialogObserver = new MutationObserver(() => { const d=document.querySelector("#appDialog"); if(!d?.open || d.dataset.smokeFilled==="1") return; d.dataset.smokeFilled="1"; const values=window.__crudPromptQueue.splice(0); const controls=[...d.querySelectorAll("input,textarea,select")]; controls.forEach((control,i)=>{ if(values[i]!==undefined) control.value=values[i]; }); d.querySelector("#appDialogForm").requestSubmit(); }); window.__crudDialogObserver.observe(document.querySelector("#appDialog"),{attributes:true,attributeFilter:["open"]});`);
+  await evaluate(`document.querySelector("#appDialog").addEventListener("close", () => { delete document.querySelector("#appDialog").dataset.smokeFilled; });`);
+  const promptFor = async values => evaluate(`window.__crudPromptQueue = ${JSON.stringify(values)}`);
+  await evaluate('document.querySelector("[data-view=tasks]").click()');
+  const taskId = await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").tasks||[]).find(x=>x.title==="SPARKLE browser smoke task")?.id');
+  await promptFor(["SPARKLE browser task edited","Edited task details"]);
+  await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="task"][data-id="${taskId}"]').click()`);
+  assert.ok(await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").tasks||[]).some(x=>x.title==="SPARKLE browser task edited"&&x.details==="Edited task details")'), "task edit should persist locally");
+  const goalId = await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").goals||[]).find(x=>x.title==="SPARKLE browser smoke task")?.id');
+  await promptFor(["SPARKLE browser goal edited","Edited goal details"]);
+  await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="goal"][data-id="${goalId}"]').click()`);
+  assert.ok(await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").goals||[]).some(x=>x.title==="SPARKLE browser goal edited")'), "goal edit should persist locally");
+
+  await evaluate('document.querySelector("[data-view=knowledge]").click(); document.querySelector("#noteTitle").value="CRUD smoke note"; document.querySelector("#noteContent").value="Original note body"; document.querySelector("[data-action=save-note]").click()');
+  await evaluate('document.querySelector("#noteTitle").value="Robot joint torque and kinematics"; document.querySelector("#noteContent").value="Actuator torque moves robotic joints and computes end effector pose through a kinematic chain."; document.querySelector("[data-action=save-note]").click()');
+  let knowledgeSavedOnServer = false;
+  for (let i = 0; i < 50; i++) {
+    const response = await fetch(baseURL + "/api/data", { headers: { Authorization: "Bearer " + token } });
+    const snapshot = await response.json();
+    knowledgeSavedOnServer = (snapshot.data.knowledge || []).some(item => item.title === "Robot joint torque and kinematics");
+    if (knowledgeSavedOnServer) break;
+    await delay(100);
+  }
+  assert.equal(knowledgeSavedOnServer, true, "Knowledge note must persist on the Python server before semantic search starts");
+  await evaluate('document.querySelector("#knowledgeSearchInput").value="How do robot arms move their joints?"; document.querySelector("[data-action=knowledge-search]").click()');
+  let semanticKnowledgeStatus = "";
+  for (let i = 0; i < 100; i++) {
+    semanticKnowledgeStatus = await evaluate('document.querySelector("#viewRoot").innerText');
+    if (semanticKnowledgeStatus.includes("Semantic search ·") || semanticKnowledgeStatus.includes("Keyword fallback ·")) break;
+    await delay(100);
+  }
+  assert.ok(semanticKnowledgeStatus.includes("Semantic search ·") || semanticKnowledgeStatus.includes("Keyword fallback ·"), "Knowledge search should complete with semantic mode or a visible lexical fallback");
+  assert.ok(semanticKnowledgeStatus.includes("Robot joint torque and kinematics"), "natural-language search should surface the related saved note");
+  await evaluate('document.querySelector("#knowledgeSearchInput").value=""; document.querySelector("[data-action=knowledge-search]").click()');
+  const noteId = await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").knowledge||[]).find(x=>x.title==="CRUD smoke note")?.id');
+  await promptFor(["CRUD smoke note edited","Edited note body"]);
+  await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="knowledge"][data-id="${noteId}"]').click()`);
+  assert.ok(await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").knowledge||[]).some(x=>x.title==="CRUD smoke note edited"&&x.content==="Edited note body")'), "Knowledge note edit should persist locally");
+
+  await evaluate('document.querySelector("[data-view=research]").click(); document.querySelector("#researchInput").value="CRUD smoke research question"; document.querySelector("[data-action=save-research]").click()');
+  const researchId = await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").researchDrafts||[]).find(x=>x.question==="CRUD smoke research question")?.id');
+  await promptFor(["CRUD smoke research question edited"]);
+  await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="research"][data-id="${researchId}"]').click()`);
+  assert.ok(await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").researchDrafts||[]).some(x=>x.question==="CRUD smoke research question edited")'), "research-question edit should persist locally");
+
+  await evaluate('document.querySelector("[data-view=learning]").click(); document.querySelector("#learnTopic").value="CRUD smoke learning"; document.querySelector("#learnGoal").value="Original learning goal"; document.querySelector("[data-action=save-learning]").click()');
+  const learningId = await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").learningPlans||[]).find(x=>x.topic==="CRUD smoke learning")?.id');
+  await promptFor(["CRUD smoke learning edited","Intermediate","Edited learning goal"]);
+  await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="learning"][data-id="${learningId}"]').click()`);
+  assert.ok(await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").learningPlans||[]).some(x=>x.topic==="CRUD smoke learning edited"&&x.level==="Intermediate")'), "learning-plan edit should persist locally");
+
+  await evaluate('document.querySelector("[data-view=projects]").click(); document.querySelector("#projectName").value="CRUD smoke project"; document.querySelector("#projectOutcome").value="Original outcome"; document.querySelector("#projectCriteria").value="Original criteria"; document.querySelector("[data-action=save-project]").click()');
+  const projectId = await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").projects||[]).find(x=>x.name==="CRUD smoke project")?.id');
+  await promptFor(["CRUD smoke project edited","Edited outcome","Edited criteria"]);
+  await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="project"][data-id="${projectId}"]').click()`);
+  assert.ok(await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").projects||[]).some(x=>x.name==="CRUD smoke project edited"&&x.outcome==="Edited outcome")'), "project edit should persist locally");
+
+  await evaluate('document.querySelector("[data-view=lab]").click(); document.querySelector("[data-lab-tab=Research]").click(); document.querySelector("#labQuestion").value="CRUD smoke R&D question"; document.querySelector("#labHypothesis").value="Original hypothesis"; document.querySelector("[data-action=save-lab]").click()');
+  const labId = await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").labDrafts||[]).find(x=>x.question==="CRUD smoke R&D question")?.id');
+  await promptFor(["CRUD smoke R&D question edited","Edited hypothesis"]);
+  await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="lab"][data-id="${labId}"]').click()`);
+  assert.ok(await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").labDrafts||[]).some(x=>x.question==="CRUD smoke R&D question edited"&&x.hypothesis==="Edited hypothesis")'), "R&D draft edit should persist locally");
+  let crudEditsSynced = false;
+  for (let i = 0; i < 50; i++) {
+    const response = await fetch(`${baseURL}/api/data`, { headers: { Authorization: `Bearer ${token}` } });
+    const remote = await response.json();
+    crudEditsSynced = remote.data.tasks?.some(x=>x.title==="SPARKLE browser task edited")
+      && remote.data.goals?.some(x=>x.title==="SPARKLE browser goal edited")
+      && remote.data.knowledge?.some(x=>x.title==="CRUD smoke note edited")
+      && remote.data.researchDrafts?.some(x=>x.question==="CRUD smoke research question edited")
+      && remote.data.learningPlans?.some(x=>x.topic==="CRUD smoke learning edited")
+      && remote.data.projects?.some(x=>x.name==="CRUD smoke project edited")
+      && remote.data.labDrafts?.some(x=>x.question==="CRUD smoke R&D question edited");
+    if (crudEditsSynced) break;
+    await delay(100);
+  }
+  assert.equal(crudEditsSynced, true, "edits across every persisted record collection should sync to the private server");
+
+  // Delete each record using its explicit UI affordance and verify local persistence.
+  const deleteRecord = async (kind, collection, predicate) => {
+    const itemId = await evaluate(`(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").${collection}||[]).find(${predicate})?.id`);
+    assert.ok(itemId, `a ${kind} fixture should exist before deletion`);
+    if (kind === "lab") await evaluate('document.querySelector("[data-view=lab]").click(); document.querySelector("[data-lab-tab=Research]").click()');
+    else await evaluate(`document.querySelector('[data-view="${kind==="task"||kind==="goal"?"tasks":kind==="knowledge"?"knowledge":kind==="project"?"projects":kind==="research"?"research":"learning"}"]').click()`);
+    await evaluate(`document.querySelector('[data-action="delete-item"][data-kind="${kind}"][data-id="${itemId}"]').click()`);
+    await delay(0);
+    let stillPresent = await evaluate(`(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").${collection}||[]).some(x=>x.id===${JSON.stringify(itemId)})`);
+    if (stillPresent && await evaluate('!!document.querySelector("#appDialog")?.open')) {
+      await evaluate('document.querySelector("#appDialogSubmit").click()');
+    }
+    let stillPresentAfterConfirm = true;
+    for (let i = 0; i < 50; i++) {
+      stillPresentAfterConfirm = await evaluate(`(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").${collection}||[]).some(x=>x.id===${JSON.stringify(itemId)})`);
+      if (!stillPresentAfterConfirm) break;
+      await delay(20);
+    }
+    assert.equal(stillPresentAfterConfirm, false, `${kind} deletion should persist locally`);
+  };
+  await deleteRecord("task","tasks",'x=>x.title==="SPARKLE browser task edited"');
+  await deleteRecord("goal","goals",'x=>x.title==="SPARKLE browser goal edited"');
+  await deleteRecord("knowledge","knowledge",'x=>x.title==="CRUD smoke note edited"');
+  await deleteRecord("research","researchDrafts",'x=>x.question==="CRUD smoke research question edited"');
+  await deleteRecord("learning","learningPlans",'x=>x.topic==="CRUD smoke learning edited"');
+  await deleteRecord("project","projects",'x=>x.name==="CRUD smoke project edited"');
+  await deleteRecord("lab","labDrafts",'x=>x.question==="CRUD smoke R&D question edited"');
+  let crudDeletesSynced = false;
+  for (let i = 0; i < 50; i++) {
+    const response = await fetch(`${baseURL}/api/data`, { headers: { Authorization: `Bearer ${token}` } });
+    const remote = await response.json();
+    crudDeletesSynced = !remote.data.tasks?.some(x=>x.title==="SPARKLE browser task edited")
+      && !remote.data.goals?.some(x=>x.title==="SPARKLE browser goal edited")
+      && !remote.data.knowledge?.some(x=>x.title==="CRUD smoke note edited")
+      && !remote.data.researchDrafts?.some(x=>x.question==="CRUD smoke research question edited")
+      && !remote.data.learningPlans?.some(x=>x.topic==="CRUD smoke learning edited")
+      && !remote.data.projects?.some(x=>x.name==="CRUD smoke project edited")
+      && !remote.data.labDrafts?.some(x=>x.question==="CRUD smoke R&D question edited");
+    if (crudDeletesSynced) break;
+    await delay(100);
+  }
+  assert.equal(crudDeletesSynced, true, "deletions across every persisted record collection should sync to the private server");
+  await evaluate('window.__crudDialogObserver?.disconnect(); window.prompt = window.__crudOriginalPrompt; window.confirm = window.__crudOriginalConfirm; delete window.__crudDialogObserver; delete window.__crudOriginalPrompt; delete window.__crudOriginalConfirm; delete window.__crudPromptQueue');
+
+  // A partial/malformed backup must fail closed and preserve current records.
+  const partialBackupPath = join(serverRoot, "partial-backup-fixture.json");
+  writeFileSync(partialBackupPath, JSON.stringify({ format: "sparkle-gen3-local-backup", version: 1, data: { tasks: [] } }));
+  const oversizedBackupPath = join(serverRoot, "oversized-workspace-fixture.json");
+  const oversizedData = { chat: [], conversations: [], workspaceChats: [], tasks: [], goals: [], knowledge: Array.from({length: 40}, (_,i)=>({id:"large-"+i,title:"Large note "+i,content:"x".repeat(50000)})), projects: [], researchDrafts: [], learningPlans: [], labDrafts: [] };
+  writeFileSync(oversizedBackupPath, JSON.stringify({format:"sparkle-gen3-local-backup",version:1,data:oversizedData,preferences:{}}));
   const backupPath = join(serverRoot, "restore-fixture.json");
   writeFileSync(backupPath, JSON.stringify({
     format: "sparkle-gen3-local-backup", version: 1,
@@ -270,6 +540,29 @@ try {
   const documentTree = await cdp("DOM.getDocument", { depth: 1 });
   const backupInput = await cdp("DOM.querySelector", { nodeId: documentTree.root.nodeId, selector: "#backupImport" });
   assert.ok(backupInput.nodeId, "backup restore input should be available in Settings");
+  const preRestore = await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")');
+  await evaluate(`window.__backupExportOriginalURL = URL.createObjectURL.bind(URL); window.__backupExportOriginalClick = HTMLAnchorElement.prototype.click; window.__backupExportBlob = null; URL.createObjectURL = blob => { window.__backupExportBlob = blob; return "blob:backup-smoke"; }; HTMLAnchorElement.prototype.click = function() { window.__backupExportFilename = this.download; };`);
+  await evaluate('document.querySelector("[data-action=export-data]").click()');
+  const exportedBackup = await evaluate('window.__backupExportBlob ? window.__backupExportBlob.text().then(text=>({filename:window.__backupExportFilename,payload:JSON.parse(text)})) : null');
+  assert.ok(exportedBackup, "backup export should produce a JSON Blob");
+  assert.match(exportedBackup.filename, /^sparkle-gen3-backup-\d{4}-\d{2}-\d{2}\.json$/, "backup export should use a dated JSON filename");
+  assert.equal(exportedBackup.payload.format, "sparkle-gen3-local-backup", "export should include the supported backup format marker");
+  assert.deepEqual(Object.keys(exportedBackup.payload.data).sort(), ["chat","conversations","goals","knowledge","labDrafts","learningPlans","projects","researchDrafts","tasks","workspaceChats"].sort(), "export should include every workspace collection");
+  await evaluate('URL.createObjectURL = window.__backupExportOriginalURL; HTMLAnchorElement.prototype.click = window.__backupExportOriginalClick; delete window.__backupExportOriginalURL; delete window.__backupExportOriginalClick; delete window.__backupExportBlob; delete window.__backupExportFilename');
+  await cdp("DOM.setFileInputFiles", { files: [partialBackupPath], nodeId: backupInput.nodeId });
+  await delay(150);
+  const afterPartialBackup = await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")');
+  assert.deepEqual(afterPartialBackup, preRestore, "an incomplete backup must not clear or change any existing local workspace records");
+  assert.equal(await evaluate('document.body.innerText.includes("Backup not restored")'), true, "invalid backup should report that restore was rejected");
+  await cdp("DOM.setFileInputFiles", { files: [oversizedBackupPath], nodeId: backupInput.nodeId });
+  await delay(150);
+  assert.deepEqual(await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")'), preRestore, "a valid but oversized workspace must be rejected without changing current records");
+  assert.equal(await evaluate('document.body.innerText.includes("safe 1.8 MB")'), true, "oversized workspace should explain the safe persistence/sync bound");
+  await evaluate('window.__restoreConfirm = window.confirm; window.confirm = () => false');
+  await cdp("DOM.setFileInputFiles", { files: [backupPath], nodeId: backupInput.nodeId });
+  await delay(100);
+  assert.deepEqual(await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")'), preRestore, "canceling the restore confirmation must preserve current records");
+  await evaluate('window.confirm = window.__restoreConfirm; delete window.__restoreConfirm');
   await cdp("DOM.setFileInputFiles", { files: [backupPath], nodeId: backupInput.nodeId });
   let restored = false;
   for (let i = 0; i < 50; i++) {
@@ -289,6 +582,7 @@ try {
     await delay(100);
   }
   assert.ok(restoredServer.data.tasks?.some(task => task.title === "Restored fixture task"), "restored backup should sync to the private server");
+  assert.equal(await evaluate('document.body.innerText.includes("Restored fixture task")'), true, "valid backup restore should render the replacement records");
 
   // Simulate a tab closing mid-inference: the next load must recover the server-saved pending placeholder.
   const interrupted = {
@@ -305,6 +599,14 @@ try {
   const seedInterrupted = await fetch(`${baseURL}/api/data`, { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(interrupted) });
   assert.equal(seedInterrupted.status, 200, "test should be able to seed an interrupted conversation through the normal API");
   await cdp("Page.reload", { ignoreCache: true });
+  let reloadReady = false;
+  for (let i = 0; i < 100; i++) {
+    reloadReady = await evaluate('document.readyState === "complete" && !!document.querySelector("[data-view=chat]")');
+    if (reloadReady) break;
+    await delay(100);
+  }
+  assert.equal(reloadReady, true, "page should be ready after reload before checking recovery");
+  await evaluate('document.querySelector("[data-view=chat]").click()');
   let interruptionRecovered = false;
   for (let i = 0; i < 100; i++) {
     interruptionRecovered = await evaluate('document.body.innerText.includes("Response interrupted")');
@@ -325,6 +627,9 @@ try {
   // Stream a controlled response through the actual browser reader and verify
   // that partial text appears before the final event arrives.
   await evaluate('document.querySelector("[data-view=chat]")?.click()');
+  // Shift+Enter keeps the draft; plain Enter must trigger the real form path.
+  await evaluate('document.querySelector("#chatInput").value = "first line"; document.querySelector("#chatInput").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true, cancelable: true }))');
+  assert.equal(await evaluate('document.querySelector("#chatInput").value'), "first line", "Shift+Enter should preserve the multiline draft");
   await evaluate(`window.__sparkleOriginalFetch = window.fetch.bind(window);
     const enc = new TextEncoder();
     const frame = (event, data) => enc.encode("event: " + event + String.fromCharCode(10) + "data: " + JSON.stringify(data) + String.fromCharCode(10, 10));
@@ -344,8 +649,8 @@ try {
       }
       return window.__sparkleOriginalFetch(input, init);
     };
-    document.querySelector("#chatInput").value = "SPARKLE streaming smoke test";
-    document.querySelector("#chatForm").requestSubmit();`);
+    document.querySelector("#chatInput").value = "SPARKLE Enter-key streaming smoke test";
+    document.querySelector("#chatInput").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));`);
   let partialVisible = false;
   for (let i = 0; i < 40; i++) {
     partialVisible = await evaluate('document.body.innerText.includes("Streaming works") && !!document.querySelector("[data-action=cancel-response]")');
@@ -423,7 +728,7 @@ try {
   }
   assert.equal(workspaceCleared, true, "confirmed clear-data action should empty all workspace collections on the server");
   assert.deepEqual(runtimeErrors, [], `browser session should not throw runtime exceptions: ${runtimeErrors.join("; ")}`);
-  console.log("PASS browser smoke: workspaces, theme/sidebar, mobile layout/navigation, pairing, task/goal/learning/project/R&D sync, live simulation controls, deterministic five-point sweep, saved run manifests, Crossref/citations, reload recovery, streamed chat/timing, edit/retry, cancellation, backup restore, and confirmed workspace clearing");
+  console.log("PASS browser smoke: workspaces, theme/sidebar, mobile layout/navigation, pairing, Personal Core durable proposals, explicit task approval without privileged execution, and cross-device proposal sync without refresh; live workspace revision sync without reload, persisted-record CRUD and server sync, task/goal/learning/project/R&D sync, live simulation controls, deterministic five-point sweep, saved run manifests, Crossref/citations, reload recovery, streamed chat/timing, edit/retry, cancellation, backup restore, and confirmed workspace clearing");
 } finally {
   for (const item of pending.values()) { clearTimeout(item.timer); item.reject(new Error("Browser test ended")); }
   pending.clear();

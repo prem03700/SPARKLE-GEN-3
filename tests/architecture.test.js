@@ -28,7 +28,9 @@ test("local backend and model are enabled while privileged execution remains dis
   assert.equal(ACTION_POLICY.codeExecutionEnabled, false);
   assert.equal(ACTION_POLICY.simulatorExecutionEnabled, false);
   assert.equal(ACTION_POLICY.externalWritesEnabled, false);
-  for (const item of INTEGRATION_REGISTRY) assert.equal(item.status, "disabled");
+  assert.equal(INTEGRATION_REGISTRY.find(item => item.id === "web-research").status, "limited");
+  for (const id of ["persistent-storage","experiment-compute"]) assert.equal(INTEGRATION_REGISTRY.find(item => item.id === id).status, "implemented");
+  for (const id of ["code-runner","robotics-simulator"]) assert.equal(INTEGRATION_REGISTRY.find(item => item.id === id).status, "disabled");
   assert.equal(isActionEnabled("code_execution"), false);
   assert.equal(isActionEnabled("model_call"), true);
 });
@@ -57,19 +59,22 @@ test("action proposals are reviewable and approval-gated", () => {
 });
 
 
-test("every integration remains disabled and approval-gated", () => {
+test("capabilities declare explicit activation and approval boundaries", () => {
   assert.ok(INTEGRATION_REGISTRY.length > 0);
-  for (const integration of INTEGRATION_REGISTRY) {
-    assert.equal(integration.status, "disabled", `${integration.id} must stay disabled`);
-    assert.equal(integration.requiresApproval, true, `${integration.id} must require approval`);
-  }
+  for (const item of INTEGRATION_REGISTRY) assert.equal(item.requiresApproval, true, `${item.id} must require explicit user intent`);
+  assert.equal(INTEGRATION_REGISTRY.find(item => item.id === "nvidia-image-generation").status, "implemented");
+  assert.equal(INTEGRATION_REGISTRY.find(item => item.id === "private-webrtc-voice").status, "optional");
+  assert.equal(INTEGRATION_REGISTRY.find(item => item.id === "nvidia-nemotron-realtime-voice").status, "implemented");
+  assert.equal(INTEGRATION_REGISTRY.find(item => item.id === "web-research").status, "limited", "public research is implemented but upstream connectivity is not yet verified");
+  for (const id of ["persistent-storage","nvidia-image-generation","experiment-compute"]) assert.equal(INTEGRATION_REGISTRY.find(item => item.id === id).status, "implemented");
+  for (const id of ["code-runner","robotics-simulator"]) assert.equal(INTEGRATION_REGISTRY.find(item => item.id === id).status, "disabled", `${id} must remain disabled`);
 });
 
 test("frontend uses only its same-origin API and avoids arbitrary network and dynamic-code APIs", async () => {
   const { readFile } = await import("node:fs/promises");
   const { resolve } = await import("node:path");
   const root = resolve(import.meta.dirname, "..");
-  const files = ["index.html", "src/app.js", "src/core/action-policy.js", "src/core/agent-registry.js", "src/core/agent-management.js", "src/core/contracts.js", "src/core/handoff-service.js", "src/core/ui-state.js", "src/integrations/registry.js", "src/domains/chat/view.js", "src/domains/research/view.js", "src/domains/learning/view.js", "src/domains/coding/view.js", "src/domains/projects/view.js", "src/domains/rd-lab/view.js", "src/domains/knowledge/view.js", "src/domains/tasks/view.js", "src/domains/settings/view.js"];
+  const files = ["index.html", "src/app.js", "src/core/action-policy.js", "src/core/agent-registry.js", "src/core/agent-management.js", "src/core/contracts.js", "src/core/answer-renderer.js", "src/core/realtime-voice.js", "src/core/realtime-websocket-voice.js", "src/core/handoff-service.js", "src/core/ui-state.js", "src/integrations/registry.js", "src/domains/chat/view.js", "src/domains/research/view.js", "src/domains/learning/view.js", "src/domains/coding/view.js", "src/domains/projects/view.js", "src/domains/rd-lab/view.js", "src/domains/knowledge/view.js", "src/domains/tasks/view.js", "src/domains/settings/view.js"];
   const forbidden = /\b(?:XMLHttpRequest|WebSocket|EventSource|eval|Function)\s*\(/;
   for (const file of files) {
     const source = await readFile(resolve(root, file), "utf8");
