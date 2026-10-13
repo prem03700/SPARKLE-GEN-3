@@ -51,3 +51,13 @@ test("only explicit valid SPARKLE JSON fences are upgraded; invalid content rema
   assert.match(html, /answer-card/);
   assert.match(html, /sparkle-table/);
 });
+
+test("recognized visual JSON in a generic fence renders as a diagram instead of raw JSON", () => {
+  const input = '```json\n' + JSON.stringify({type:"diagram",title:"PID Control Loop",edges:[["Target Position","Error Calculation"],["Error Calculation","PID Controller"],["PID Controller","Motor Driver"],["Motor Driver","Robot Joint"],["Robot Joint","Sensor Feedback"],["Sensor Feedback","Error Calculation"]]}) + '\n```';
+  const prepared = prepareStructuredAnswer(input);
+  assert.equal(prepared.blocks.length,1);
+  const html = renderPreparedAnswer("<p>"+prepared.text+"</p>",prepared.blocks);
+  assert.match(html,/answer-diagram/);
+  assert.match(html,/Sensor Feedback/);
+  assert.doesNotMatch(html,/<pre class="response-code"><code>json/);
+});

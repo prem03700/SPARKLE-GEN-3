@@ -63,8 +63,8 @@ test("capabilities declare explicit activation and approval boundaries", () => {
   assert.ok(INTEGRATION_REGISTRY.length > 0);
   for (const item of INTEGRATION_REGISTRY) assert.equal(item.requiresApproval, true, `${item.id} must require explicit user intent`);
   assert.equal(INTEGRATION_REGISTRY.find(item => item.id === "nvidia-image-generation").status, "implemented");
-  assert.equal(INTEGRATION_REGISTRY.find(item => item.id === "private-webrtc-voice").status, "optional");
-  assert.equal(INTEGRATION_REGISTRY.find(item => item.id === "nvidia-nemotron-realtime-voice").status, "implemented");
+  assert.equal(INTEGRATION_REGISTRY.some(item => item.id === "private-webrtc-voice"), false, "Gemini Live must be the only voice provider");
+  assert.equal(INTEGRATION_REGISTRY.find(item => item.id === "google-gemini-live-voice").status, "implemented");
   assert.equal(INTEGRATION_REGISTRY.find(item => item.id === "web-research").status, "limited", "public research is implemented but upstream connectivity is not yet verified");
   for (const id of ["persistent-storage","nvidia-image-generation","experiment-compute"]) assert.equal(INTEGRATION_REGISTRY.find(item => item.id === id).status, "implemented");
   for (const id of ["code-runner","robotics-simulator"]) assert.equal(INTEGRATION_REGISTRY.find(item => item.id === id).status, "disabled", `${id} must remain disabled`);

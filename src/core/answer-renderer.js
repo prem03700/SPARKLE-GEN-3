@@ -1,5 +1,5 @@
 const MAX_TEXT = 500;
-const TYPES = new Set(["card", "table", "chart", "diagram", "prompt", "graph", "steps"]);
+const TYPES = new Set(["card", "table", "chart", "diagram", "prompt", "graph", "steps", "robot_arm"]);
 
 export function validateAnswerBlock(value, expectedType = "") {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "Expected an object." };
@@ -41,6 +41,11 @@ export function validateAnswerBlock(value, expectedType = "") {
       return { ok: false, error: "A graph needs 2–24 points with finite numeric x and y values." };
     }
     return { ok: true, value: { type, title: clean(value.title, 160), xLabel: clean(value.xLabel, 60), yLabel: clean(value.yLabel, 60), points } };
+  }
+  if (type === "robot_arm") {
+    const link1=Number(value.link1),link2=Number(value.link2);
+    if (![link1,link2].every(n=>Number.isFinite(n)&&n>0&&n<=10)) return {ok:false,error:"Robot link lengths must be positive and at most 10."};
+    return {ok:true,value:{type,title:clean(value.title,160)||"Two-link robot arm",link1,link2}};
   }
   if (type === "steps") {
     const steps = Array.isArray(value.steps) ? value.steps.slice(0, 12).map((step, index) => ({
@@ -99,6 +104,9 @@ export function renderAnswerBlock(input, expectedType = "") {
       coords.map((point, i) => '<circle class="answer-graph-point" cx="' + point.x.toFixed(2) + '" cy="' + point.y.toFixed(2) + '" r="3.5"><title>' + e(value.points[i].label || ("(" + value.points[i].x + ", " + value.points[i].y + ")")) + '</title></circle>').join("") +
       '<text x="200" y="184" text-anchor="middle" class="answer-graph-label">' + e(value.xLabel) + '</text><text x="9" y="92" text-anchor="middle" class="answer-graph-label" transform="rotate(-90 9 92)">' + e(value.yLabel) + '</text></svg></figure>';
   }
+  if (value.type === "robot_arm") {
+    return '<section class="answer-robot-arm" data-robot-arm data-link1="'+value.link1+'" data-link2="'+value.link2+'"><h3 class="answer-block-title">'+e(value.title)+'</h3><p>Move the joint sliders. The arm and end-effector coordinates update from forward kinematics.</p><div class="robot-arm-controls"><label>Base angle θ₁ <output data-angle1>45°</output><input type="range" min="-180" max="180" value="45" step="1" data-angle="1" aria-label="Base joint angle"></label><label>Elbow angle θ₂ <output data-angle2>35°</output><input type="range" min="-180" max="180" value="35" step="1" data-angle="2" aria-label="Elbow joint angle"></label></div><svg class="robot-arm-svg" viewBox="-2.5 -2.5 5 5" role="img" aria-label="Interactive two-link robot arm"><path class="robot-grid" d="M-2 0H2 M0 -2V2"/><circle class="robot-base" cx="0" cy="0" r=".07"/><path data-arm-link1 class="robot-link" d="M0 0L0 0"/><path data-arm-link2 class="robot-link robot-link-secondary" d="M0 0L0 0"/><circle data-arm-elbow class="robot-joint" cx="0" cy="0" r=".07"/><circle data-arm-tip class="robot-tip" cx="0" cy="0" r=".06"/></svg><p aria-live="polite">End effector: <strong data-arm-coordinates>(—, —)</strong></p><p class="robot-arm-equations">x = L₁ cos θ₁ + L₂ cos(θ₁ + θ₂)<br>y = L₁ sin θ₁ + L₂ sin(θ₁ + θ₂)</p><button type="button" class="soft-button" data-arm-reset>Reset angles</button></section>';
+  }
   if (value.type === "steps") {
     return '<section class="answer-steps" data-answer-steps><h3 class="answer-block-title">' + e(value.title || "Step-by-step explanation") + '</h3><div class="answer-step-progress" role="status" aria-live="polite">Step 1 of ' + value.steps.length + '</div>' +
       value.steps.map((step, i) => '<div class="answer-step-body" data-step-panel="' + i + '"' + (i ? ' hidden' : '') + '><span class="answer-step-number">' + String(i + 1).padStart(2, "0") + '</span><h4>' + e(step.title) + '</h4><p>' + e(step.body) + '</p></div>').join("") +
@@ -111,9 +119,24 @@ export function renderAnswerBlock(input, expectedType = "") {
 /** Recognizes only explicit fenced SPARKLE JSON blocks; invalid blocks remain ordinary code. */
 export function prepareStructuredAnswer(raw) {
   const blocks = [];
-  const text = String(raw ?? "").replace(/\`\`\`sparkle-(card|table|chart|diagram|prompt|graph|steps)\s*\n([\s\S]*?)\n?\`\`\`/g, (whole, type, json) => {
+  const text = String(raw ?? "").replace(/\`\`\`(sparkle-(?:card|table|chart|diagram|prompt|graph|steps|robot_arm)|json)\s*\n([\s\S]*?)\n?\`\`\`/g, (whole, language, json) => {
     try {
       const parsed = JSON.parse(json);
+      let type = language.startsWith("sparkle-") ? language.slice(8) : String(parsed.type || "");
+      // Some models return the documented visual schema in a generic JSON fence
+      // rather than the required sparkle-* fence. Upgrade only recognized,
+      // validated schemas; unrelated JSON remains a normal code block.
+      if (language === "json" && type === "diagram" && !Array.isArray(parsed.nodes) && Array.isArray(parsed.edges)) {
+        const ordered = [];
+        for (const edge of parsed.edges.slice(0, 12)) {
+          if (!Array.isArray(edge) || edge.length < 2) continue;
+          const from = String(edge[0]).slice(0, 120), to = String(edge[1]).slice(0, 120);
+          if (from && !ordered.includes(from)) ordered.push(from);
+          if (to && !ordered.includes(to)) ordered.push(to);
+        }
+        parsed.nodes = ordered;
+      }
+      if (language === "json" && !["card", "table", "chart", "diagram", "prompt", "graph", "steps", "robot_arm"].includes(type)) return whole;
       const html = renderAnswerBlock(parsed, type);
       if (!html) return whole;
       const token = "SPARKLEANSWERBLOCKTOKEN" + blocks.length + "END";

@@ -80,10 +80,12 @@ def load_private_runtime_value(name, path=None):
     return ""
 
 
-# Optional local WebRTC voice endpoint and token are read only from the environment
-# or the same owner-only private configuration file; neither is returned to the UI.
-VOICECHAT_URL = load_private_runtime_value("SPARKLE_VOICECHAT_URL")
-VOICECHAT_TOKEN = load_private_runtime_value("SPARKLE_VOICECHAT_TOKEN")
+# Gemini Live is the sole realtime voice provider. Its API key is read only from
+# the process environment or the owner-only config file and never returned to clients.
+GEMINI_API_KEY = load_private_runtime_value("GEMINI_API_KEY")
+GEMINI_LIVE_MODEL = "models/gemini-3.8-live"
+VOICECHAT_URL = ""
+VOICECHAT_TOKEN = ""
 # Loopback is the safe default. Bind to a specific trusted LAN IP only when multi-device LAN access is needed.
 HOST = os.environ.get("SPARKLE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SPARKLE_PORT", "4173"))
@@ -212,6 +214,30 @@ def build_chat_context(agent, cleaned_messages, memory_enabled=False, knowledge=
     messages = [m for m in cleaned_messages if isinstance(m, dict) and m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str) and m["content"].strip()]
     if not messages or messages[-1]["role"] != "user":
         raise ValueError("The last message must be from you.")
+    # Explicit progressive-visual requests must produce the UI's navigable block,
+    # not merely a textual promise that the user can ask for the next stage.
+    latest_user = messages[-1]["content"].lower()
+    progressive_terms = ("progressive visual", "progressive explanation", "navigate to the next stage", "step-by-step visual", "visual walkthrough")
+    progressive_visual = any(m["role"] == "user" and any(term in m["content"].lower() for term in progressive_terms) for m in messages)
+    requested_stage = re.search(r"\bstage\s*(\d+)\b", latest_user)
+    if progressive_visual and requested_stage:
+        system += (
+            " This conversation is an ongoing progressive visual walkthrough and the latest user turn requests stage " + requested_stage.group(1) + ". "
+            "Answer only that requested stage; do not restart the lesson or dump all stages. "
+            "You MUST include one valid fenced sparkle visual block relevant to this stage. "
+            "For a system-flow stage, use ```sparkle-diagram JSON with a nodes array of 3–8 concise labels; "
+            "for a numeric or tuning stage use ```sparkle-graph with 2–12 finite numeric points; "
+            "otherwise use ```sparkle-card with a short title and explanatory body. "
+            "Never output a bare JSON code fence or ask the user to type the next stage instead of showing the visual."
+        )
+    elif progressive_visual:
+        system += (
+            " This conversation requests a progressive visual walkthrough. "
+            "You MUST include exactly one valid fenced ```sparkle-steps JSON block in your response, "
+            "with a concise title and 3–8 meaningful steps, each containing title and body strings. "
+            "Explain the first step briefly in ordinary prose; do not tell the user to type the next stage as a substitute for navigation. "
+            "Never omit the interactive sparkle-steps block."
+        )
     budget = max(1000, int(history_char_budget))
     selected_history = []
     used = 0
@@ -942,13 +968,8 @@ def valid_private_voicechat_url(value=None):
 
 
 def voicechat_transport():
-    """Return the configured transport without exposing endpoint credentials."""
-    scheme = urlparse(VOICECHAT_URL).scheme.lower()
-    if scheme in {"ws", "wss"}:
-        return "websocket"
-    if scheme in {"http", "https"}:
-        return "webrtc"
-    return "none"
+    """Gemini Live is the only realtime voice provider supported by GEN-3."""
+    return "websocket" if bool(GEMINI_API_KEY) else "none"
 
 
 def _socket_read_exact(sock, size):
@@ -1003,33 +1024,25 @@ def _websocket_close_frame(code=1000, reason=""):
 
 
 def _voice_upstream_socket():
-    """Open the configured private WebSocket upstream and validate its upgrade handshake."""
-    parsed = urlparse(VOICECHAT_URL)
-    if parsed.scheme not in {"ws", "wss"} or not valid_private_voicechat_url():
-        raise ValueError("A private WebSocket VoiceChat endpoint is not configured.")
-    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
-    host = parsed.hostname
-    upstream = socket.create_connection((host, port), timeout=8)
+    """Open the fixed official Gemini Live WebSocket; never accept a user-supplied upstream URL."""
+    if not GEMINI_API_KEY:
+        raise ValueError("Gemini Live is not configured. Add GEMINI_API_KEY to the owner-only server configuration.")
+    host = "generativelanguage.googleapis.com"
+    port = 443
+    path = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?" + urlencode({"key": GEMINI_API_KEY})
+    upstream = socket.create_connection((host, port), timeout=12)
     try:
-        if parsed.scheme == "wss":
-            upstream = ssl.create_default_context().wrap_socket(upstream, server_hostname=host)
-        upstream.settimeout(8)
+        upstream = ssl.create_default_context().wrap_socket(upstream, server_hostname=host)
+        upstream.settimeout(12)
         key = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
-        host_header = f"[{host}]" if ":" in host else host
-        default_port = 443 if parsed.scheme == "wss" else 80
-        if port != default_port:
-            host_header += ":" + str(port)
-        path = parsed.path or "/"
         request = [
             f"GET {path} HTTP/1.1",
-            f"Host: {host_header}",
+            f"Host: {host}",
             "Upgrade: websocket",
             "Connection: Upgrade",
             f"Sec-WebSocket-Key: {key}",
             "Sec-WebSocket-Version: 13",
         ]
-        if VOICECHAT_TOKEN:
-            request.append("Authorization: Bearer " + VOICECHAT_TOKEN)
         upstream.sendall(("\r\n".join(request) + "\r\n\r\n").encode("ascii"))
         response = bytearray()
         while not response.endswith(b"\r\n\r\n") and len(response) < 16384:
@@ -1286,7 +1299,7 @@ class Handler(SimpleHTTPRequestHandler):
                                  "model_provider": MODEL_PROVIDER, "provider_label": model_provider_label(),
                                  "auth_required": True, "streaming_supported": True,
                                  "image_generation_configured": bool(NVIDIA_API_KEY),
-                                 "realtime_voice_supported": valid_private_voicechat_url(),
+                                 "realtime_voice_supported": bool(GEMINI_API_KEY),
                                  "realtime_voice_transport": voicechat_transport(),
                                  "server_time": now_iso(),
                                  "lan_url": f"{'https' if TLS_ENABLED else 'http'}://{lan_ip() if HOST in ('0.0.0.0', '::') else HOST}:{PORT}",
@@ -1368,8 +1381,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def handle_voice_websocket(self):
         """Authenticate the browser's first frame, then privately relay raw WebSocket frames."""
-        if voicechat_transport() != "websocket" or not valid_private_voicechat_url():
-            self.send_json(503, {"error": "Configure a trusted private SPARKLE_VOICECHAT_URL using ws:// or wss:// for realtime voice."})
+        if voicechat_transport() != "websocket" or not GEMINI_API_KEY:
+            self.send_json(503, {"error": "Gemini Live is not configured. Add GEMINI_API_KEY to the owner-only SPARKLE server configuration."})
             return
         if self.headers.get("Upgrade", "").lower() != "websocket" or "upgrade" not in self.headers.get("Connection", "").lower():
             self.send_json(400, {"error": "A WebSocket upgrade is required."})
@@ -1418,7 +1431,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             upstream = _voice_upstream_socket()
             client.settimeout(None)
-            # The auth frame is consumed locally and never forwarded to the model provider.
+            # Tell the client its paired session is authorized; Gemini's first upstream
+            # message must be the provider setup frame, so this marker stays local.
+            client.sendall(_server_websocket_frame(json.dumps({"type":"relay.ready"}).encode("utf-8")))
+            # The auth frame and Gemini API key are never forwarded to the other peer.
             sockets = [client, upstream]
             while True:
                 readable, _, _ = select.select(sockets, [], [], 30)

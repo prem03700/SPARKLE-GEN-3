@@ -56,7 +56,7 @@ test("every workspace view renders independently from the app shell", () => {
   assert.match(appSource, /Tasks, goals, Knowledge, projects, and settings will remain/);
   assert.match(appSource, /attachChatFile/);
   assert.match(appSource, /toggle-voice/);
-  assert.match(appSource, /Browser speech services may process microphone audio/);
+  assert.match(appSource, /Gemini Live is the only voice provider in SPARKLE/);
   assert.match(views[0], /data-action="toggle-voice"/);
   assert.match(views[0], /aria-pressed="false"/);
   assert.match(appSource, /attachmentContent/);

@@ -1,49 +1,45 @@
-# SPARKLE GEN-3 real-time voice
+# SPARKLE GEN-3 real-time voice — Gemini Live only
 
-SPARKLE now supports full-duplex PCM16 VoiceChat over a private WebSocket service. The browser captures microphone audio, streams 24 kHz mono PCM16, plays provider audio as it arrives, and renders live/final transcript events in the existing conversation. The shared recent chat and selected workspace agent are included as bounded session instructions. Voice has no tools; it cannot silently execute workspace actions.
+SPARKLE's only provider-backed real-time voice route is Google Gemini Live. The browser captures microphone audio, resamples it to 16 kHz mono PCM16, streams audio through SPARKLE's authenticated same-origin WebSocket relay, and plays Gemini's 24 kHz PCM16 audio as it arrives. Input/output transcriptions are shown in the current conversation. Voice is a conversational channel only: no tools or action calls are configured, and it cannot write workspace records or perform device actions.
 
-## Provider contract
+## Provider protocol
 
-The adapter targets the documented NVIDIA Nemotron VoiceChat WebSocket protocol, compatible with NeMo-Speech.cpp:
-
-- WebSocket endpoint: `/v1/realtime`
-- Readiness endpoint: `/v1/realtime/health`
-- Client sends `session.update`, then binary mono little-endian PCM16 microphone frames.
-- Server returns transcript events and `response.output_audio.delta` frames containing base64 PCM16 at 24 kHz.
-- User speech-start events cancel queued local playback and send `response.cancel` for barge-in.
-- `session.close` is sent when voice stops.
+- Official WebSocket host: `generativelanguage.googleapis.com:443` (fixed in the Python backend; not user-configurable).
+- Endpoint: `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`.
+- Model: `models/gemini-3.8-live`.
+- First provider message is `setup`, requesting audio output and input/output transcription, with no tools.
+- Input is `realtimeInput.audio` with `audio/pcm;rate=16000`; output PCM is read from `serverContent.modelTurn.parts[].inlineData` and played at 24 kHz.
+- `serverContent.interrupted` stops queued playback. `turnComplete` finalizes transcripts.
+- Stop closes the WebSocket and microphone/audio resources. The provider API key is never sent to the browser.
 
 Official references:
-- https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/server.md
-- https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/api.md
-- https://github.com/NVIDIA/NeMo-Speech.cpp/blob/main/docs/s2s/README.md
+- https://ai.google.dev/gemini-api/docs/live-api/get-started-websocket
+- https://ai.google.dev/gemini-api/docs/live-api/session-management
+- https://ai.google.dev/gemini-api/docs/live-api/ephemeral-tokens
 
-## Configure the private provider
+## Configure the Gemini API key
 
-The SPARKLE server reads optional voice settings from the process environment or the owner-only file `~/.config/sparkle/gen3.env`. The file must be a regular file owned by the current user with permissions `0600` or stricter. Example for a local provider:
+The server reads `GEMINI_API_KEY` from its process environment or the owner-only `~/.config/sparkle/gen3.env` file. That file must be a regular file owned by the service user and must not grant group/other permissions (recommended mode `0600`).
+
+Add this line to the existing owner-only configuration file (do not replace its other settings):
 
 ```dotenv
-SPARKLE_VOICECHAT_URL=ws://127.0.0.1:8080/v1/realtime
-SPARKLE_VOICECHAT_TOKEN=
+GEMINI_API_KEY=your_GEMINI_API_key_here
 ```
 
-For a separate trusted computer on the private LAN, replace `127.0.0.1` with its private IP. If the provider requires a bearer token, put it in `SPARKLE_VOICECHAT_TOKEN`; it remains server-side and is sent only to the configured upstream. Do not put provider tokens in browser code, URLs, chat messages, or Git.
+Replace the placeholder locally with a valid Gemini API key. Do not paste the key into chat, browser code, URLs, documentation, or Git. Restart the existing `sparkle-gen3.service` through its current user supervisor after adding the key. The `/api/health` response should then report `realtime_voice_supported: true` and `realtime_voice_transport: "websocket"`.
 
-Run the compatible provider on the local machine or a trusted private GPU host, verify `GET /v1/realtime/health` reports readiness, then restart the existing SPARKLE GEN-3 service through its existing supervisor so it reads the setting. SPARKLE exposes a same-origin authenticated WebSocket endpoint at `/api/voice/ws`; its first frame must contain the paired device token. The relay consumes that frame locally and never forwards it upstream. The relay rejects unpaired sessions, cross-origin browser connections, public upstreams, embedded credentials, URL query strings, redirects, and invalid WebSocket handshakes.
+If the key is absent or invalid, real-time voice remains disabled and the UI will not silently switch to Nemotron VoiceChat or browser-speech chat. The existing Nemotron text/reasoning model and NVIDIA image-generation provider remain separate and unchanged.
 
-## Hardware and runtime note
+## Security and privacy
 
-The current host's RTX 4060 Laptop GPU has approximately 8 GiB VRAM. NVIDIA's NeMo-Speech.cpp guide recommends at least 16 GB GPU-accessible memory for the recommended Q4_K_M VoiceChat model. Do not assume this host can run the full model locally; use a supported larger-GPU private host or an officially available hosted real-time endpoint. The SPARKLE browser/backend integration is tested with protocol fixtures, but a real provider is not currently configured on this host.
+- Voice is opt-in; microphone capture starts only after the user activates it.
+- The browser first sends its paired-device token to SPARKLE's same-origin relay. SPARKLE consumes and validates that token locally and never forwards it to Google.
+- Only the Python server connects to Google's fixed HTTPS/TLS WebSocket endpoint and includes the Gemini key in the upstream handshake URL. The key is not returned by health or any client API.
+- The relay checks same-origin browser requests, pairing, frame masking, and setup rate limits. TLS certificate verification remains enabled for Google.
+- The Live session has no configured tools or function calls; voice cannot automatically create tasks/goals, execute code, control devices, or perform external writes.
+- Audio and transcripts are sent to Google Gemini Live for processing. Configure and use this only if that provider/data transfer is acceptable for your use case.
 
-## Privacy and safety
+## Validation and limitations
 
-- Voice is opt-in and microphone capture begins only after the user presses Voice.
-- Microphone capture, Web Audio context, WebSocket, playback nodes, and session state are cleaned up when stopped or disconnected.
-- Live/final transcripts become messages in the current shared conversation; they do not write tasks, goals, projects, or device actions.
-- Voice provider credentials remain on the Python server. The upstream URL is constrained to loopback/private hosts.
-- The browser uses the existing same-origin SPARKLE server and device pairing. No public voice relay or cloud credentials are exposed to the browser.
-- Browser speech remains the fallback when a full-duplex provider is not configured.
-
-## Validation
-
-The automated tests cover PCM16 capture/playback, partial and final transcripts, barge-in cancellation, cleanup during stop/start races, authenticated WebSocket upgrade, unpaired-device rejection, upstream credential isolation, and frame-by-frame protocol relay. End-to-end acoustic latency, audio quality, and provider readiness require a real VoiceChat runtime and are not claimed by the fixture tests.
+Automated tests cover the browser audio protocol, transcripts, interruption cleanup, paired-device authentication, relay framing, and isolation of the Gemini key. They do not prove that a real account key/model entitlement works, nor do they measure live latency or acoustic quality. A live end-to-end session must be run after the owner configures a valid key. Session resumption and graceful reconnection across Gemini's periodic connection lifetime are follow-up reliability work; Stop always closes the current session.

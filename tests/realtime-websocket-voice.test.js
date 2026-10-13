@@ -10,8 +10,8 @@ function fixture() {
       calls.sent.push(data);
       if(typeof data==="string"){
         const event=JSON.parse(data);
-        if(event.type==="auth"){calls.auth=event;queueMicrotask(()=>this.onmessage?.({data:JSON.stringify({type:"session.created",session:{id:"fixture"}})}));}
-        else if(event.type==="session.update"){calls.session=event;queueMicrotask(()=>this.onmessage?.({data:JSON.stringify({type:"session.updated"})}));}
+        if(event.type==="auth"){calls.auth=event;queueMicrotask(()=>this.onmessage?.({data:JSON.stringify({type:"relay.ready"})}));}
+        else if(event.setup){calls.session=event;queueMicrotask(()=>this.onmessage?.({data:JSON.stringify({setupComplete:{}})}));}
       }
     }
     emit(event){this.onmessage?.({data:JSON.stringify(event)});}
@@ -42,41 +42,38 @@ function fixture() {
   return {calls,session,track,stream};
 }
 
-test("full-duplex WebSocket voice authenticates, configures PCM16, streams mic audio and cleans up", async () => {
+test("Gemini Live voice authenticates, configures audio, streams mic input and cleans up", async () => {
   const {calls,session,track}=fixture();
   assert.equal(await session.start(),true);
   assert.equal(session.active,true);
   assert.equal(calls.socket.url,"wss://sparkle.test/api/voice/ws");
   assert.equal(calls.auth.token,"t".repeat(48));
-  assert.equal(calls.session.type,"session.update");
-  assert.equal(calls.session.session.audio.input.format.rate,24000);
-  assert.equal(calls.session.session.audio.output.format.rate,24000);
-  assert.deepEqual(calls.session.session.tools,[]);
-  assert.match(calls.session.session.instructions,/SPARKLE shared conversation context/);
+  assert.equal(calls.session.setup.model,"models/gemini-3.8-live");
+  assert.deepEqual(calls.session.setup.responseModalities,["AUDIO"]);
+  assert.ok(calls.session.setup.inputAudioTranscription);
+  assert.ok(calls.session.setup.outputAudioTranscription);
+  assert.match(calls.session.setup.systemInstruction.parts[0].text,/SPARKLE shared conversation context/);
   assert.equal(calls.constraints.audio.echoCancellation,true);
-  const samples=new Float32Array(4096);samples.fill(.2);
-  calls.processor.onaudioprocess({inputBuffer:{sampleRate:48000,getChannelData:()=>samples},outputBuffer:{getChannelData:()=>new Float32Array(4096)}});
-  assert.ok(calls.sent.some(value=>value instanceof ArrayBuffer),"microphone PCM16 should be sent as binary frames");
-  calls.socket.emit({type:"conversation.item.input_audio_transcription.delta",delta:"hello "});
-  calls.socket.emit({type:"conversation.item.input_audio_transcription.delta",delta:"SPARKLE"});
-  calls.socket.emit({type:"conversation.item.input_audio_transcription.completed"});
-  calls.socket.emit({type:"response.output_audio_transcript.delta",delta:"Hello "});
-  calls.socket.emit({type:"response.output_audio_transcript.done",transcript:"Hello there"});
-  assert.deepEqual(calls.partial.slice(0,2),[{role:"user",text:"hello "},{role:"user",text:"hello SPARKLE"}]);
+  const samples=new Float32Array(1024);samples.fill(.2);
+  calls.processor.onaudioprocess({inputBuffer:{sampleRate:48000,getChannelData:()=>samples},outputBuffer:{getChannelData:()=>new Float32Array(1024)}});
+  const audioFrame=calls.sent.map(value=>typeof value==="string"?JSON.parse(value):null).find(value=>value?.realtimeInput?.audio);
+  assert.ok(audioFrame,"microphone PCM16 should be sent as Gemini JSON audio frames");
+  assert.equal(audioFrame.realtimeInput.audio.mimeType,"audio/pcm;rate=16000");
+  assert.ok(Buffer.from(audioFrame.realtimeInput.audio.data,"base64").length>0);
+  calls.socket.emit({serverContent:{inputTranscription:{text:"hello "}}});
+  calls.socket.emit({serverContent:{inputTranscription:{text:"SPARKLE"}}});
+  calls.socket.emit({serverContent:{outputTranscription:{text:"Hello there"},modelTurn:{parts:[{inlineData:{mimeType:"audio/pcm;rate=24000",data:Buffer.from(new Int16Array([1000,-1000,500]).buffer).toString("base64")}}]}}});
+  assert.equal(calls.playback.length,1,"Gemini PCM audio should be scheduled for playback");
+  calls.socket.emit({serverContent:{turnComplete:true}});
   assert.deepEqual(calls.final,[{role:"user",text:"hello SPARKLE"},{role:"assistant",text:"Hello there"}]);
-  calls.socket.emit({type:"response.output_audio.delta",delta:Buffer.from(new Int16Array([1000,-1000,500]).buffer).toString("base64")});
-  assert.equal(calls.playback.length,1,"PCM audio should be scheduled for playback");
-  calls.socket.emit({type:"input_audio_buffer.speech_started"});
-  calls.socket.emit({type:"conversation.item.input_audio_transcription.completed",transcript:"hello SPARKLE"});
-  assert.deepEqual(calls.final[2],{role:"user",text:"hello SPARKLE"},"the same words in a new turn must not be deduplicated");
-  assert.ok(calls.sent.some(value=>typeof value==="string"&&JSON.parse(value).type==="response.cancel"));
-  assert.ok(calls.stops>=1,"barge-in should stop queued playback");
+  calls.socket.emit({serverContent:{interrupted:true}});
+  assert.ok(calls.stops>=1,"Gemini interruption should stop queued playback");
   session.stop();
   assert.equal(session.active,false);
   assert.equal(track.stopped,true);
   assert.equal(calls.contextClosed,true);
   assert.equal(calls.closed.code,1000);
-  assert.ok(calls.sent.some(value=>typeof value==="string"&&JSON.parse(value).type==="session.close"));
+  assert.ok(calls.sent.every(value=>!(typeof value==="string"&&JSON.parse(value).type==="session.close")),"Gemini session is closed by closing the WebSocket, not a provider-specific command");
 });
 
 test("WebSocket voice stops a microphone stream that resolves after cancellation", async () => {

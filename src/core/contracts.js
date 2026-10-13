@@ -24,7 +24,7 @@ export function validateStreamEvent(event, payload) {
   if (event === "status" && (!text(payload.stage, 80) || !text(payload.message, 240))) return { ok: false, error: "Invalid status event." };
   if (event === "answer_block") {
     const block = payload.block;
-    if (!block || typeof block !== "object" || Array.isArray(block) || !["card", "table", "chart", "diagram", "prompt", "graph", "steps"].includes(block.type) || !validateAnswerBlock(block, block.type).ok) return { ok: false, error: "Invalid answer block." };
+    if (!block || typeof block !== "object" || Array.isArray(block) || !["card", "table", "chart", "diagram", "prompt", "graph", "steps", "robot_arm"].includes(block.type) || !validateAnswerBlock(block, block.type).ok) return { ok: false, error: "Invalid answer block." };
   }
   if (event === "image_status" && (!text(payload.status, 40) || !["queued", "generating", "succeeded", "failed"].includes(payload.status))) return { ok: false, error: "Invalid image status." };
   if (event === "image_result" && (!text(payload.artifact_id, 64) || !/^[0-9a-f]{32}$/.test(payload.artifact_id))) return { ok: false, error: "Invalid image artifact reference." };

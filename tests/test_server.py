@@ -1033,50 +1033,32 @@ class PrivateServerTests(unittest.TestCase):
         finally:
             server.NVIDIA_API_KEY = old_key
 
-    def test_realtime_voice_offer_is_disabled_by_default_and_private_host_only(self):
+    def test_realtime_voice_is_gemini_only_and_disabled_without_gemini_key(self):
         self.assertFalse(server.valid_private_voicechat_url(""))
-        self.assertTrue(server.valid_private_voicechat_url("http://127.0.0.1:9000/api/offer"))
-        self.assertTrue(server.valid_private_voicechat_url("https://[::1]:9000/api/offer"))
         self.assertTrue(server.valid_private_voicechat_url("ws://127.0.0.1:8080/v1/realtime"))
-        self.assertTrue(server.valid_private_voicechat_url("wss://192.168.1.20:8080/v1/realtime"))
         self.assertFalse(server.valid_private_voicechat_url("wss://example.com/v1/realtime"))
-        self.assertFalse(server.valid_private_voicechat_url("ws://127.0.0.1:99999/v1/realtime"))
-        self.assertFalse(server.valid_private_voicechat_url("https://example.com/api/offer"))
         self.assertFalse(server.valid_private_voicechat_url("http://user:pass@127.0.0.1:9000/api/offer"))
-        self.assertEqual(self.request("/api/voice/offer", "POST", {"sdp": "v=0\r\n"} )[0], 401)
+        self.assertEqual(self.request("/api/voice/offer", "POST", {"sdp": "v=0\r\n"})[0], 401)
         _, setup = self.request("/api/setup-code", "POST", {})
         _, paired = self.request("/api/pair", "POST", {"code": setup["code"], "name": "voice test"})
-        old_url, old_token = server.VOICECHAT_URL, server.VOICECHAT_TOKEN
+        old_key, old_url = server.GEMINI_API_KEY, server.VOICECHAT_URL
         try:
-            server.VOICECHAT_URL = ""
+            server.GEMINI_API_KEY = ""
+            server.VOICECHAT_URL = "ws://127.0.0.1:8080/v1/realtime"
+            self.assertEqual(server.voicechat_transport(), "none")
+            health_status, health = self.request("/api/health")
+            self.assertEqual(health_status, 200)
+            self.assertFalse(health["realtime_voice_supported"])
+            status, disabled = self.request("/api/voice/ws", "GET", token=paired["token"])
+            self.assertEqual(status, 503)
+            server.GEMINI_API_KEY = "gemini-fixture-key"
+            self.assertEqual(server.voicechat_transport(), "websocket")
+            self.assertTrue(server.valid_private_voicechat_url(server.VOICECHAT_URL))
+            # Legacy WebRTC/Nemotron endpoints must not become an alternate voice provider.
             status, disabled = self.request("/api/voice/offer", "POST", {"sdp": "v=0\r\n"}, paired["token"])
             self.assertEqual(status, 503)
-            server.VOICECHAT_URL = "http://127.0.0.1:9000/api/offer"
-            server.VOICECHAT_TOKEN = "voice-fixture-token"
-            answer_sdp = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"
-            class FakeResponse:
-                headers = {"Content-Type": "application/sdp"}
-                def __enter__(self): return self
-                def __exit__(self, *args): return False
-                def read(self, limit=-1): return answer_sdp.encode()
-            captured = {}
-            class FakeOpener:
-                def open(self, request, timeout):
-                    captured["url"] = request.full_url
-                    captured["authorization"] = request.get_header("Authorization")
-                    captured["body"] = request.data.decode()
-                    captured["timeout"] = timeout
-                    return FakeResponse()
-            with patch("server.urllib.request.build_opener", return_value=FakeOpener()):
-                status, result = self.request("/api/voice/offer", "POST", {"sdp": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n"}, paired["token"])
-            self.assertEqual(status, 200, result)
-            self.assertEqual(result["sdp"], answer_sdp)
-            self.assertEqual(captured["url"], server.VOICECHAT_URL)
-            self.assertEqual(captured["authorization"], "Bearer voice-fixture-token")
-            self.assertIn("v=0", captured["body"])
-            self.assertEqual(captured["timeout"], 25)
         finally:
-            server.VOICECHAT_URL, server.VOICECHAT_TOKEN = old_url, old_token
+            server.GEMINI_API_KEY, server.VOICECHAT_URL = old_key, old_url
 
     def test_optional_voice_configuration_requires_owner_only_file_permissions(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1089,20 +1071,62 @@ class PrivateServerTests(unittest.TestCase):
                 os.chmod(path, 0o644)
                 self.assertEqual(server.load_private_runtime_value("SPARKLE_VOICECHAT_URL", path), "")
 
-    def test_authenticated_realtime_voice_websocket_relay(self):
+    def test_gemini_live_upstream_uses_fixed_tls_host_and_server_side_key(self):
         import base64
         import hashlib
-        old_url, old_token = server.VOICECHAT_URL, server.VOICECHAT_TOKEN
+        old_key = server.GEMINI_API_KEY
+        server.GEMINI_API_KEY = "fixture-key-123"
+        captured = {}
+        class FakeSocket:
+            def __init__(self): self.response = bytearray(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n")
+            def settimeout(self, value): pass
+            def sendall(self, data): captured["request"] = data.decode("ascii")
+            def recv(self, size):
+                if self.response:
+                    chunk = self.response[:size]
+                    del self.response[:size]
+                    return bytes(chunk)
+                return b""
+            def close(self): pass
+        fake = FakeSocket()
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        accept = base64.b64encode(hashlib.sha1((key+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()).decode("ascii")
+        fake.response.extend(("Sec-WebSocket-Accept: "+accept+"\r\n\r\n").encode("ascii"))
+        class FakeTLS:
+            def wrap_socket(self, sock, server_hostname):
+                captured["tls_hostname"] = server_hostname
+                return sock
+        # Capture the generated client key so the fake upstream can return a valid accept.
+        def fake_sendall(data):
+            captured["request"] = data.decode("ascii")
+            request_key = next(line.split(":",1)[1].strip() for line in captured["request"].split("\r\n") if line.lower().startswith("sec-websocket-key:"))
+            expected = base64.b64encode(hashlib.sha1((request_key+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()).decode("ascii")
+            fake.response = bytearray(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "+expected+"\r\n\r\n").encode("ascii"))
+        fake.sendall = fake_sendall
+        try:
+            with patch("server.socket.create_connection", return_value=fake) as connect, patch("server.ssl.create_default_context", return_value=FakeTLS()):
+                result = server._voice_upstream_socket()
+            self.assertIs(result, fake)
+            connect.assert_called_once_with(("generativelanguage.googleapis.com", 443), timeout=12)
+            self.assertEqual(captured["tls_hostname"], "generativelanguage.googleapis.com")
+            request = captured["request"]
+            self.assertIn("Host: generativelanguage.googleapis.com", request)
+            self.assertIn("/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=fixture-key-123", request)
+            self.assertNotIn("Authorization:", request)
+        finally:
+            server.GEMINI_API_KEY = old_key
+
+    def test_authenticated_gemini_live_websocket_relay(self):
+        import base64
+        import hashlib
+        old_key = server.GEMINI_API_KEY
+        server.GEMINI_API_KEY = "gemini-fixture-key"
         upstream_listener = socket.socket()
         upstream_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         upstream_listener.bind(("127.0.0.1", 0))
         upstream_listener.listen(1)
         upstream_port = upstream_listener.getsockname()[1]
-        server.VOICECHAT_URL = f"ws://127.0.0.1:{upstream_port}/v1/realtime"
-        server.VOICECHAT_TOKEN = "upstream-fixture-token"
-        upstream_events = []
-        upstream_done = threading.Event()
-        upstream_errors = []
+        upstream_events, upstream_done, upstream_errors = [], threading.Event(), []
 
         def read_headers(conn):
             raw = bytearray()
@@ -1112,24 +1136,36 @@ class PrivateServerTests(unittest.TestCase):
                 raw.extend(item)
             return bytes(raw)
 
+        def connect_fixture_upstream():
+            conn = socket.create_connection(("127.0.0.1", upstream_port), timeout=4)
+            conn.settimeout(4)
+            key = base64.b64encode(os.urandom(16)).decode()
+            conn.sendall(("GET /fixture HTTP/1.1\r\nHost: fixture\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: "+key+"\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+            response = read_headers(conn).decode("iso-8859-1")
+            if "101 Switching Protocols" not in response:
+                conn.close()
+                raise ConnectionError("fixture upstream rejected websocket handshake")
+            return conn
+
         def upstream_server():
             conn = None
             try:
                 conn, _ = upstream_listener.accept()
                 conn.settimeout(4)
                 request = read_headers(conn).decode("iso-8859-1")
-                upstream_events.append(("authorization", next((line.split(":",1)[1].strip() for line in request.split("\r\n") if line.lower().startswith("authorization:")), "")))
+                upstream_events.append(("request", request))
                 key = next(line.split(":",1)[1].strip() for line in request.split("\r\n") if line.lower().startswith("sec-websocket-key:"))
                 accept = base64.b64encode(hashlib.sha1((key+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
                 conn.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "+accept+"\r\n\r\n").encode())
-                conn.sendall(server._server_websocket_frame(json.dumps({"type":"session.created","session":{"id":"fixture"}}).encode()))
-                opcode, payload = server._read_client_websocket_frame(conn, 16384)
-                upstream_events.append(("session", json.loads(payload.decode())))
-                conn.sendall(server._server_websocket_frame(json.dumps({"type":"session.updated"}).encode()))
-                opcode, payload = server._read_client_websocket_frame(conn, 16384)
-                upstream_events.append(("audio_opcode", opcode))
-                upstream_events.append(("audio", payload))
-                conn.sendall(server._server_websocket_frame(json.dumps({"type":"response.output_audio_transcript.done","transcript":"Hello from fixture"}).encode()))
+                opcode, payload = server._read_client_websocket_frame(conn, 65536)
+                setup_event = json.loads(payload.decode())
+                upstream_events.append(("setup", setup_event))
+                conn.sendall(server._server_websocket_frame(json.dumps({"setupComplete":{}}).encode()))
+                opcode, payload = server._read_client_websocket_frame(conn, 65536)
+                audio_event = json.loads(payload.decode())
+                upstream_events.append(("audio", audio_event))
+                response = {"serverContent":{"outputTranscription":{"text":"Hello from Gemini fixture"},"modelTurn":{"parts":[{"inlineData":{"mimeType":"audio/pcm;rate=24000","data":"AQACAAMA"}}]}}}
+                conn.sendall(server._server_websocket_frame(json.dumps(response).encode()))
                 upstream_done.set()
             except Exception as exc:
                 upstream_errors.append(type(exc).__name__ + ": " + str(exc))
@@ -1143,7 +1179,7 @@ class PrivateServerTests(unittest.TestCase):
         thread = threading.Thread(target=upstream_server, daemon=True)
         thread.start()
         _, setup = self.request("/api/setup-code", "POST", {})
-        _, paired = self.request("/api/pair", "POST", {"code":setup["code"],"name":"voice websocket test"})
+        _, paired = self.request("/api/pair", "POST", {"code":setup["code"],"name":"Gemini voice websocket test"})
 
         def masked_frame(payload, opcode=1):
             payload = bytes(payload)
@@ -1175,35 +1211,39 @@ class PrivateServerTests(unittest.TestCase):
 
         try:
             self.assertEqual(server.voicechat_transport(),"websocket")
-            self.assertTrue(server.valid_private_voicechat_url(server.VOICECHAT_URL))
             invalid=browser_socket("z"*48)
             opcode,payload=receive_frame(invalid)
             self.assertEqual(opcode,8)
             self.assertEqual(int.from_bytes(payload[:2],"big"),1008)
             invalid.close()
 
-            browser=browser_socket(paired["token"])
-            opcode,payload=receive_frame(browser)
-            self.assertEqual(opcode,1)
-            self.assertEqual(json.loads(payload.decode())["type"],"session.created")
-            browser.sendall(masked_frame(json.dumps({"type":"session.update","session":{"tools":[]}}).encode()))
-            opcode,payload=receive_frame(browser)
-            self.assertEqual(json.loads(payload.decode())["type"],"session.updated")
-            browser.sendall(masked_frame(b"pcm16-fixture",opcode=2))
-            opcode,payload=receive_frame(browser)
-            self.assertEqual(json.loads(payload.decode())["transcript"],"Hello from fixture")
-            self.assertTrue(upstream_done.wait(3))
-            self.assertEqual(upstream_events[0],("authorization","Bearer upstream-fixture-token"))
-            self.assertEqual(upstream_events[1][0],"session")
-            self.assertEqual(upstream_events[1][1]["type"],"session.update")
-            self.assertEqual(upstream_events[2],("audio_opcode",2))
-            self.assertEqual(upstream_events[3],("audio",b"pcm16-fixture"))
+            with patch("server._voice_upstream_socket", side_effect=connect_fixture_upstream):
+                browser=browser_socket(paired["token"])
+                opcode,payload=receive_frame(browser)
+                self.assertEqual(opcode,1)
+                self.assertEqual(json.loads(payload.decode())["type"],"relay.ready")
+                setup_message={"setup":{"model":"models/gemini-3.8-live","responseModalities":["AUDIO"],"tools":[]}}
+                browser.sendall(masked_frame(json.dumps(setup_message).encode()))
+                opcode,payload=receive_frame(browser)
+                self.assertEqual(json.loads(payload.decode()),{"setupComplete":{}})
+                audio_message={"realtimeInput":{"audio":{"data":"AQACAAMA","mimeType":"audio/pcm;rate=16000"}}}
+                browser.sendall(masked_frame(json.dumps(audio_message).encode()))
+                opcode,payload=receive_frame(browser)
+                response=json.loads(payload.decode())
+                self.assertEqual(response["serverContent"]["outputTranscription"]["text"],"Hello from Gemini fixture")
+                self.assertTrue(upstream_done.wait(3))
+                browser.close()
+
+            self.assertIn(("setup",setup_message),upstream_events)
+            self.assertIn(("audio",audio_message),upstream_events)
+            request_headers=upstream_events[0][1].lower()
+            self.assertNotIn("authorization:",request_headers)
+            self.assertNotIn(paired["token"],request_headers)
             self.assertEqual(upstream_errors,[])
-            browser.close()
         finally:
             try: upstream_listener.close()
             except OSError: pass
-            server.VOICECHAT_URL, server.VOICECHAT_TOKEN = old_url, old_token
+            server.GEMINI_API_KEY = old_key
             thread.join(timeout=2)
 
 if __name__ == "__main__":
