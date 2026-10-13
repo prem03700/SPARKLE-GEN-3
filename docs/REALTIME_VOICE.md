@@ -7,10 +7,13 @@ SPARKLE's only provider-backed real-time voice route is Google Gemini Live. The 
 - Official WebSocket host: `generativelanguage.googleapis.com:443` (fixed in the Python backend; not user-configurable).
 - Endpoint: `/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`.
 - Model: `models/gemini-3.8-live`.
-- First provider message is `setup`, requesting audio output and input/output transcription, with no tools.
+- First provider message is `setup`, using `generationConfig.responseModalities: ["AUDIO"]`, requesting input/output transcription, with no tools.
+- Gemini server messages are JSON payloads carried in binary WebSocket frames; the browser decodes these frames before processing setup, transcripts, audio, interruption, and turn completion.
 - Input is `realtimeInput.audio` with `audio/pcm;rate=16000`; output PCM is read from `serverContent.modelTurn.parts[].inlineData` and played at 24 kHz.
 - `serverContent.interrupted` stops queued playback. `turnComplete` finalizes transcripts.
-- Stop closes the WebSocket and microphone/audio resources. The provider API key is never sent to the browser.
+- `sessionResumptionUpdate` stores the latest resumable handle in memory only; the next connection sends it as `sessionResumption.handle`. Handles are not written to local storage or the workspace.
+- `goAway` triggers a reconnect before the provider closes the connection. Unexpected disconnects retry with bounded backoff (up to five attempts); the microphone stream and audio context are retained during reconnect and stopped when the user presses Stop or retries are exhausted.
+- Context-window sliding compression is enabled for long conversations. Stop closes the WebSocket and microphone/audio resources. The provider API key is never sent to the browser.
 
 Official references:
 - https://ai.google.dev/gemini-api/docs/live-api/get-started-websocket
@@ -42,4 +45,4 @@ If the key is absent or invalid, real-time voice remains disabled and the UI wil
 
 ## Validation and limitations
 
-Automated tests cover the browser audio protocol, transcripts, interruption cleanup, paired-device authentication, relay framing, and isolation of the Gemini key. They do not prove that a real account key/model entitlement works, nor do they measure live latency or acoustic quality. A live end-to-end session must be run after the owner configures a valid key. Session resumption and graceful reconnection across Gemini's periodic connection lifetime are follow-up reliability work; Stop always closes the current session.
+Automated tests cover the browser audio protocol (including binary WebSocket frames), transcripts, interruption cleanup, paired-device authentication, relay framing, isolation of the Gemini key, session-resumption handles, proactive GoAway reconnect, retained microphone/audio resources, and context compression configuration. A live provider round-trip has been verified with the configured key: Gemini accepted setup, returned output transcription and audio data, and completed the turn. This validates provider credentials/model access and audio response delivery, but it does not replace manual browser microphone-to-speaker/interruption testing on a paired device or measure acoustic quality. Provider session resumption is now implemented and fixture-tested; live long-duration reconnect behavior still requires a real Gemini session lasting through a provider connection rotation.

@@ -54,6 +54,50 @@ class PersonalCoreServiceTests(unittest.TestCase):
         self.assertEqual(data["goals"], [])
         self.assertEqual(prefs, {"theme": "dark", "density": "Compact", "accent": "#ABCDEF", "memoryEnabled": True})
 
+    def test_custom_theme_and_appearance_preferences_are_bounded_and_normalized(self):
+        palette = {
+            "name": "Robotics Lab", "bg": "#101820", "surface": "#1b2836",
+            "surface2": "#26394a", "text": "#edf4fa", "muted": "#a9bdcd",
+            "line": "#385064", "sidebar": "#0d1924", "bubble": "#26394a",
+            "accent": "#56d8d1",
+        }
+        data, prefs = normalize_workspace_payload(
+            DEFAULT_DATA,
+            {
+                "theme": "Robotics Lab",
+                "customThemes": [palette, {"name": "Invalid", "accent": "url(javascript:alert(1))"}],
+                "appearance": {"fontSize": 19, "radius": 24, "sidebar": "bordered",
+                               "message": "outlined", "contrast": "high", "motion": "reduced"},
+            },
+            DEFAULT_DATA, DEFAULT_PREFS,
+        )
+        self.assertEqual(data["tasks"], [])
+        self.assertEqual(prefs["theme"], "Robotics Lab")
+        self.assertEqual(prefs["customThemes"], [palette])
+        self.assertEqual(prefs["appearance"], {
+            "fontSize": 19, "radius": 24, "sidebar": "bordered",
+            "message": "outlined", "contrast": "high", "motion": "reduced",
+        })
+
+    def test_workspace_appearance_is_scoped_validated_and_bounded(self):
+        data, prefs = normalize_workspace_payload(
+            DEFAULT_DATA,
+            {"workspaceAppearance": {
+                "chat": {"theme": "ocean", "accent": "#123456", "density": "Compact", "layout": "focused"},
+                "research": {"theme": "not-a-theme", "accent": "url(javascript:alert(1))", "density": "huge", "layout": "execute"},
+                "unknown-view": {"theme": "midnight", "accent": "#ffffff", "density": "Compact", "layout": "compact"},
+            }},
+            DEFAULT_DATA, DEFAULT_PREFS,
+        )
+        self.assertEqual(data["tasks"], [])
+        self.assertEqual(prefs["workspaceAppearance"]["chat"], {
+            "theme": "ocean", "accent": "#123456", "density": "Compact", "layout": "focused",
+        })
+        self.assertEqual(prefs["workspaceAppearance"]["research"], {
+            "theme": "global", "accent": "", "density": "global", "layout": "default",
+        })
+        self.assertNotIn("unknown-view", prefs["workspaceAppearance"])
+
     def test_save_and_read_use_authoritative_revisioned_workspace(self):
         data = {**DEFAULT_DATA, "tasks": [{"id": "t1", "title": "Study"}]}
         result = save_workspace(

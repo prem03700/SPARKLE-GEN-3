@@ -10,6 +10,9 @@ test("stream contracts accept current SSE events and bounded optional UI events"
   assert.equal(validateStreamEvent("answer_block", {block:{type:"card",title:"A",body:"Card content"}}).ok, true);
   assert.equal(validateStreamEvent("answer_block", {block:{type:"graph",points:[{x:0,y:0},{x:1,y:1}]}}).ok, true);
   assert.equal(validateStreamEvent("answer_block", {block:{type:"steps",steps:[{title:"One",body:"Start"},{title:"Two",body:"Finish"}]}}).ok, true);
+  assert.equal(validateStreamEvent("answer_block", {block:{type:"robot_arm",link1:1,link2:1}}).ok, true);
+  assert.equal(validateStreamEvent("answer_block", {block:{type:"graph",points:[{x:-1,y:1},{x:0,y:0},{x:1,y:1}],tangent:{kind:"quadratic",x:0}}}).ok, true);
+  assert.equal(validateStreamEvent("answer_block", {block:{type:"graph",points:[{x:-1,y:1},{x:1,y:1}],tangent:{kind:"arbitrary",x:0}}}).ok, false);
   assert.equal(validateStreamEvent("image_result", {artifact_id:"a".repeat(32)}).ok, true);
   assert.equal(validateStreamEvent("voice_event", {type:"transcript"}).ok, true);
 });

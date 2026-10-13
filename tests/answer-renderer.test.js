@@ -29,6 +29,24 @@ test("interactive line graphs validate finite bounded points and render animated
   assert.match(html,/<svg/);
   assert.equal(validateAnswerBlock({points:[{x:0,y:0},{x:Infinity,y:1}]},"graph").ok,false);
   assert.equal(validateAnswerBlock({points:[{x:0,y:0}]},"graph").ok,false);
+  const tangent = {title:"y = x²",points:[{x:-2,y:4},{x:0,y:0},{x:2,y:4}],tangent:{kind:"quadratic",x:0}};
+  assert.equal(validateAnswerBlock(tangent,"graph").ok,true);
+  const tangentHTML = renderAnswerBlock(tangent,"graph");
+  assert.match(tangentHTML,/data-tangent-slider/);
+  assert.match(tangentHTML,/data-tangent-line/);
+  assert.equal(validateAnswerBlock({...tangent,tangent:{kind:"unknown",x:0}},"graph").ok,false);
+  assert.equal(validateAnswerBlock({...tangent,tangent:{kind:"quadratic",x:3}},"graph").ok,false);
+});
+
+test("robot arm payloads render accessible forward-kinematics controls and reject invalid links", () => {
+  const block = {title:"Two link arm",link1:1.2,link2:0.8};
+  assert.equal(validateAnswerBlock(block,"robot_arm").ok,true);
+  const html = renderAnswerBlock(block,"robot_arm");
+  assert.match(html,/data-angle="1"/);
+  assert.match(html,/data-angle="2"/);
+  assert.match(html,/data-arm-coordinates/);
+  assert.match(html,/data-arm-reset/);
+  assert.equal(validateAnswerBlock({...block,link1:0},"robot_arm").ok,false);
 });
 
 test("step explanations render navigable, escaped panels without executable markup", () => {

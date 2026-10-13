@@ -33,7 +33,7 @@ function cdp(method, params = {}, targetSession = sessionId) {
 
 async function evaluate(expression) {
   const response = await cdp("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
-  if (response.exceptionDetails) throw new Error(response.exceptionDetails.text || "Browser JavaScript failed");
+  if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description || response.exceptionDetails.text || "Browser JavaScript failed");
   return response.result?.value;
 }
 
@@ -80,7 +80,7 @@ try {
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
   socket.onmessage = event => {
     const message = JSON.parse(event.data);
-    if (message.method === "Runtime.exceptionThrown") runtimeErrors.push(message.params.exceptionDetails?.text || "Browser runtime exception");
+    if (message.method === "Runtime.exceptionThrown") runtimeErrors.push(message.params.exceptionDetails?.exception?.description || message.params.exceptionDetails?.text || "Browser runtime exception");
     if (message.method === "Page.javascriptDialogOpening") {
       cdp("Page.handleJavaScriptDialog", { accept: true, promptText: "SPARKLE browser smoke task" }).catch(() => {});
     }
@@ -126,6 +126,14 @@ try {
   const richBlockHTML = await evaluate('import("/src/core/answer-renderer.js").then(m => { const ticks=String.fromCharCode(96).repeat(3); const nl=String.fromCharCode(10); const source=ticks+"sparkle-card"+nl+JSON.stringify({title:"<unsafe>",body:"Safe text"})+nl+ticks; const prepared=m.prepareStructuredAnswer(source); return m.renderPreparedAnswer("<p>"+prepared.text+"</p>",prepared.blocks); })');
   assert.match(richBlockHTML, /answer-card/, "structured assistant blocks should render in the browser");
   assert.match(richBlockHTML, /&lt;unsafe&gt;/, "structured assistant block text should be escaped in the browser");
+  const tangentInteraction = await evaluate('import("/src/core/answer-renderer.js").then(m => { const box=document.createElement("div"); box.innerHTML=m.renderAnswerBlock({title:"y = x²",points:[{x:-2,y:4},{x:0,y:0},{x:2,y:4}],tangent:{kind:"quadratic",x:0}},"graph"); document.body.append(box); const slider=box.querySelector("[data-tangent-slider]"),line=box.querySelector("[data-tangent-line]"),before=line.getAttribute("d"); slider.value="1"; slider.dispatchEvent(new Event("input",{bubbles:true})); const moved=line.getAttribute("d"),slope=box.querySelector("[data-tangent-slope]").textContent; box.querySelector("[data-tangent-reset]").click(); const reset=slider.value; box.remove(); return {hasControl:!!slider,before,moved,slope,reset}; })');
+  assert.notEqual(tangentInteraction.moved, tangentInteraction.before, "moving the tangent slider should move the tangent line in the browser");
+  assert.ok(tangentInteraction.slope.includes("slope f′(x) = 2.0"), "tangent interaction should update the derivative value");
+  assert.equal(tangentInteraction.reset, "0", "tangent reset should restore the initial point");
+  const armInteraction = await evaluate('import("/src/core/answer-renderer.js").then(m => { const box=document.createElement("div"); box.innerHTML=m.renderAnswerBlock({title:"Two-link arm",link1:1,link2:1},"robot_arm"); document.body.append(box); const slider=box.querySelector(\'input[data-angle="1"]\'),tip=box.querySelector("[data-arm-tip]"); slider.value="90"; slider.dispatchEvent(new Event("input",{bubbles:true})); const moved=tip.getAttribute("cx"),coords=box.querySelector("[data-arm-coordinates]").textContent; box.querySelector("[data-arm-reset]").click(); const reset=slider.value; box.remove(); return {moved,coords,reset}; })');
+  assert.notEqual(armInteraction.moved, "0", "changing a robot joint should update the SVG end effector");
+  assert.ok(armInteraction.coords.includes("("), "forward kinematics should report end-effector coordinates");
+  assert.equal(armInteraction.reset, "45", "robot-arm reset should restore the default base angle");
   assert.equal(await evaluate('import("/src/core/realtime-websocket-voice.js").then(m => typeof m.createRealtimeWebSocketVoiceSession)'), "function", "full-duplex voice module should be served by the private app");
 
   // Verify theme persistence controls, collapsible desktop navigation, and a
@@ -137,6 +145,20 @@ try {
   assert.equal(await evaluate('document.documentElement.dataset.theme'), originalTheme, "theme toggle should restore the original theme");
   assert.ok(await evaluate('getComputedStyle(document.body).fontFamily.includes("system-ui")'), "UI should use the system font stack without relying on a missing remote font");
   await evaluate('document.querySelector("[data-view=settings]").click()');
+  assert.equal(await evaluate('!!document.querySelector(".connection-card")'), true, "Settings should retain private device and Personal Core controls");
+  assert.equal(await evaluate('document.querySelectorAll("[data-theme-choice]").length'), 0, "theme gallery must not be embedded in Settings");
+  assert.equal(await evaluate('!!document.querySelector("#customThemeName")'), false, "custom theme creator must live only in the dedicated appearance tab");
+  assert.equal(await evaluate('!!document.querySelector("#themeSourceImage")'), false, "image-to-theme tools must not be embedded in Settings");
+  await evaluate('document.querySelector("[data-view=appearance]").click()');
+  assert.equal(await evaluate('document.querySelectorAll("[data-theme-choice]").length'), 12, "dedicated Themes & appearance tab should offer twelve full palette themes");
+  assert.equal(await evaluate('!!document.querySelector("#themeSourceImage") && document.querySelector("#extractImageTheme").disabled'), true, "image-inspired theme controls should be present and wait for an image selection");
+  const lightBackground = await evaluate('getComputedStyle(document.documentElement).getPropertyValue("--bg").trim()');
+  await evaluate('Array.from(document.querySelectorAll("[data-theme-choice]")).find(b => b.dataset.themeChoice === "ocean").click()');
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), "ocean", "choosing a theme card should immediately apply that palette");
+  assert.notEqual(await evaluate('getComputedStyle(document.documentElement).getPropertyValue("--bg").trim()'), lightBackground, "theme selection should change the actual workspace background");
+  assert.equal(await evaluate('document.querySelector("#settingTheme").value'), "ocean", "theme selector should stay synchronized with the selected card");
+  assert.equal(await evaluate('localStorage.getItem("sparkle-theme")'), "ocean", "theme selection should persist locally");
+  await evaluate('Array.from(document.querySelectorAll("[data-theme-choice]")).find(b => b.dataset.themeChoice === "light").click()');
   await evaluate('document.querySelector("#densitySelect").value = "Compact"; document.querySelector("[data-action=save-theme]").click()');
   assert.equal(await evaluate('document.documentElement.dataset.density'), "compact", "Compact density should apply a real CSS preset");
   const compactPadding = await evaluate('getComputedStyle(document.querySelector(".panel-card")).padding');
@@ -146,7 +168,30 @@ try {
   assert.notEqual(compactPadding, spaciousPadding, "density presets should change layout spacing");
   await evaluate('document.querySelector("#densitySelect").value = "Comfortable"; document.querySelector("[data-action=save-theme]").click()');
   assert.equal(await evaluate('document.documentElement.dataset.density'), "comfortable", "browser smoke should restore the default density");
+  assert.equal(await evaluate('!!document.querySelector("#fontScale") && !!document.querySelector("#customThemeName")'), true, "advanced appearance and custom theme creator should render");
+  await evaluate('document.querySelector("#fontScale").value = "17"; document.querySelector("#radiusScale").value = "18"; document.querySelector("#contrastMode").value = "high"; document.querySelector("[data-action=save-advanced-appearance]").click()');
+  assert.equal(await evaluate('document.documentElement.style.getPropertyValue("--font-size-base")'), "17px", "advanced text scale should apply");
+  assert.equal(await evaluate('document.documentElement.dataset.contrast'), "high", "high-contrast setting should apply");
+  await evaluate('document.querySelector("#customThemeName").value = "Browser Smoke Palette"; document.querySelector("#customBg").value = "#121923"; document.querySelector("#customAccent").value = "#ff8844"; document.querySelector("[data-action=save-custom-theme]").click()');
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), "custom", "saved custom palette should become active");
+  assert.equal(await evaluate('getComputedStyle(document.documentElement).getPropertyValue("--bg").trim()'), "#121923", "custom palette should set its validated background");
+  assert.equal(await evaluate('({rows:document.querySelectorAll(".custom-theme-row").length,hasList:!!document.querySelector("#customThemeList"),hasCreator:!!document.querySelector("#customThemeName"),hasText:document.querySelector("#viewRoot").innerText.includes("Custom theme creator")})').then(v=>v.rows), 1, "custom theme should appear in the saved palette list");
+  assert.equal(await evaluate('document.querySelector("#settingTheme").value'), "Browser Smoke Palette", "custom palette should appear in theme selector");
+  await evaluate('document.querySelector("[data-action=edit-custom-theme]").click()');
+  assert.equal(await evaluate('document.querySelector("#customThemeName").value'), "Browser Smoke Palette", "saved palette can be loaded back into the creator");
+  await evaluate('document.querySelector("#fontScale").value = "15"; document.querySelector("#radiusScale").value = "12"; document.querySelector("#contrastMode").value = "normal"; document.querySelector("[data-action=save-advanced-appearance]").click()');
+  assert.equal(await evaluate('document.querySelectorAll("[data-workspace-appearance-row]").length'), 10, "per-workspace appearance should offer all ten supported workspaces");
+  const globalThemeBeforeWorkspaceOverride = await evaluate('localStorage.getItem("sparkle-theme")');
+  await evaluate('(()=>{const row=document.querySelector("[data-workspace-appearance-row=chat]");row.querySelector("[data-workspace-theme]").value="ocean";row.querySelector("[data-workspace-accent]").value="#123456";row.querySelector("[data-workspace-density]").value="Compact";row.querySelector("[data-workspace-layout]").value="focused";row.querySelector("[data-action=save-workspace-appearance]").click()})()');
+  assert.equal(await evaluate('JSON.parse(localStorage.getItem("sparkle-workspace-appearance")).chat.theme'), "ocean", "workspace appearance should persist independently");
   await evaluate('document.querySelector("[data-view=chat]").click()');
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), "ocean", "Chat should use its workspace-specific theme");
+  assert.equal(await evaluate('document.documentElement.style.getPropertyValue("--accent")'), "#123456", "Chat should use its workspace-specific accent");
+  assert.equal(await evaluate('document.documentElement.dataset.density'), "compact", "Chat should use its workspace-specific density");
+  assert.equal(await evaluate('document.documentElement.dataset.workspaceLayout'), "focused", "Chat should use its workspace-specific layout");
+  assert.equal(await evaluate('localStorage.getItem("sparkle-theme")'), globalThemeBeforeWorkspaceOverride, "workspace theme must not overwrite the global theme preference");
+  await evaluate('document.querySelector("[data-view=appearance]").click(); document.querySelector("[data-action=reset-workspace-appearance][data-workspace=chat]").click(); document.querySelector("[data-view=chat]").click()');
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), "custom", "resetting a workspace should restore the global custom theme");
   await evaluate('document.querySelector("#collapseSidebar").click()');
   assert.equal(await evaluate('document.body.classList.contains("sidebar-collapsed")'), true, "desktop sidebar should collapse");
   await evaluate('document.querySelector("#collapseSidebar").click()');
@@ -401,7 +446,7 @@ try {
   assert.equal(afterReload.saved, true, "saved task should remain in browser storage after reload");
 
   // End-to-end CRUD acceptance for all user-owned saved-record collections.
-  await evaluate(`window.__crudOriginalPrompt = window.prompt; window.__crudOriginalConfirm = window.confirm; window.confirm = () => true; window.__crudPromptQueue = []; window.__crudDialogObserver = new MutationObserver(() => { const d=document.querySelector("#appDialog"); if(!d?.open || d.dataset.smokeFilled==="1") return; d.dataset.smokeFilled="1"; const values=window.__crudPromptQueue.splice(0); const controls=[...d.querySelectorAll("input,textarea,select")]; controls.forEach((control,i)=>{ if(values[i]!==undefined) control.value=values[i]; }); d.querySelector("#appDialogForm").requestSubmit(); }); window.__crudDialogObserver.observe(document.querySelector("#appDialog"),{attributes:true,attributeFilter:["open"]});`);
+  await evaluate(`window.__crudOriginalPrompt = window.prompt; window.__crudOriginalConfirm = window.confirm; window.confirm = () => true; window.__crudPromptQueue = []; window.__crudDialogObserver = new MutationObserver(() => { const d=document.querySelector("#appDialog"); if(!d?.open) return; const values=window.__crudPromptQueue.splice(0); const controls=[...d.querySelectorAll("input,textarea,select")]; if(!values.length && controls.length) return; d.dataset.smokeFilled="1"; controls.forEach((control,i)=>{ if(values[i]!==undefined) control.value=values[i]; }); d.querySelector("#appDialogForm").requestSubmit(); }); window.__crudDialogObserver.observe(document.querySelector("#appDialog"),{attributes:true,attributeFilter:["open"]});`);
   await evaluate(`document.querySelector("#appDialog").addEventListener("close", () => { delete document.querySelector("#appDialog").dataset.smokeFilled; });`);
   const promptFor = async values => evaluate(`window.__crudPromptQueue = ${JSON.stringify(values)}`);
   await evaluate('document.querySelector("[data-view=tasks]").click()');
@@ -409,6 +454,9 @@ try {
   await promptFor(["SPARKLE browser task edited","Edited task details"]);
   await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="task"][data-id="${taskId}"]').click()`);
   assert.ok(await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").tasks||[]).some(x=>x.title==="SPARKLE browser task edited"&&x.details==="Edited task details")'), "task edit should persist locally");
+  // Native dialog close events are queued as a separate browser task. Wait for
+  // that lifecycle event before opening the next edit dialog in this smoke run.
+  await delay(25);
   const goalId = await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").goals||[]).find(x=>x.title==="SPARKLE browser smoke task")?.id');
   await promptFor(["SPARKLE browser goal edited","Edited goal details"]);
   await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="goal"][data-id="${goalId}"]').click()`);
@@ -527,12 +575,12 @@ try {
   const partialBackupPath = join(serverRoot, "partial-backup-fixture.json");
   writeFileSync(partialBackupPath, JSON.stringify({ format: "sparkle-gen3-local-backup", version: 1, data: { tasks: [] } }));
   const oversizedBackupPath = join(serverRoot, "oversized-workspace-fixture.json");
-  const oversizedData = { chat: [], conversations: [], workspaceChats: [], tasks: [], goals: [], knowledge: Array.from({length: 40}, (_,i)=>({id:"large-"+i,title:"Large note "+i,content:"x".repeat(50000)})), projects: [], researchDrafts: [], learningPlans: [], labDrafts: [] };
+  const oversizedData = { chat: [], conversations: [], workspaceChats: [], tasks: [], goals: [], knowledge: Array.from({length: 40}, (_,i)=>({id:"large-"+i,title:"Large note "+i,content:"x".repeat(50000)})), projects: [], researchDrafts: [], workspaceHistory: [], learningPlans: [], labDrafts: [] };
   writeFileSync(oversizedBackupPath, JSON.stringify({format:"sparkle-gen3-local-backup",version:1,data:oversizedData,preferences:{}}));
   const backupPath = join(serverRoot, "restore-fixture.json");
   writeFileSync(backupPath, JSON.stringify({
     format: "sparkle-gen3-local-backup", version: 1,
-    data: { chat: [], conversations: [], workspaceChats: [], tasks: [{ title: "Restored fixture task", details: "Backup restore e2e", done: false }], goals: [], knowledge: [], projects: [], researchDrafts: [], learningPlans: [], labDrafts: [] },
+    data: { chat: [], conversations: [], workspaceChats: [], tasks: [{ title: "Restored fixture task", details: "Backup restore e2e", done: false }], goals: [], knowledge: [], projects: [], researchDrafts: [], workspaceHistory: [], learningPlans: [], labDrafts: [] },
     preferences: { theme: "dark", density: "Compact", accent: "#53684d", memoryEnabled: false }
   }));
   await evaluate('document.querySelector("[data-view=settings]").click()');
@@ -540,6 +588,7 @@ try {
   const documentTree = await cdp("DOM.getDocument", { depth: 1 });
   const backupInput = await cdp("DOM.querySelector", { nodeId: documentTree.root.nodeId, selector: "#backupImport" });
   assert.ok(backupInput.nodeId, "backup restore input should be available in Settings");
+  const setBackupFile = async path => { const tree = await cdp("DOM.getDocument", { depth: 1 }); const input = await cdp("DOM.querySelector", { nodeId: tree.root.nodeId, selector: "#backupImport" }); assert.ok(input.nodeId, "backup restore input should remain available after view updates"); await cdp("DOM.setFileInputFiles", { files: [path], nodeId: input.nodeId }); };
   const preRestore = await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")');
   await evaluate(`window.__backupExportOriginalURL = URL.createObjectURL.bind(URL); window.__backupExportOriginalClick = HTMLAnchorElement.prototype.click; window.__backupExportBlob = null; URL.createObjectURL = blob => { window.__backupExportBlob = blob; return "blob:backup-smoke"; }; HTMLAnchorElement.prototype.click = function() { window.__backupExportFilename = this.download; };`);
   await evaluate('document.querySelector("[data-action=export-data]").click()');
@@ -547,23 +596,24 @@ try {
   assert.ok(exportedBackup, "backup export should produce a JSON Blob");
   assert.match(exportedBackup.filename, /^sparkle-gen3-backup-\d{4}-\d{2}-\d{2}\.json$/, "backup export should use a dated JSON filename");
   assert.equal(exportedBackup.payload.format, "sparkle-gen3-local-backup", "export should include the supported backup format marker");
-  assert.deepEqual(Object.keys(exportedBackup.payload.data).sort(), ["chat","conversations","goals","knowledge","labDrafts","learningPlans","projects","researchDrafts","tasks","workspaceChats"].sort(), "export should include every workspace collection");
+  assert.deepEqual(Object.keys(exportedBackup.payload.data).sort(), ["chat","conversations","goals","knowledge","labDrafts","learningPlans","projects","researchDrafts","tasks","workspaceChats","workspaceHistory"].sort(), "export should include every workspace collection");
   await evaluate('URL.createObjectURL = window.__backupExportOriginalURL; HTMLAnchorElement.prototype.click = window.__backupExportOriginalClick; delete window.__backupExportOriginalURL; delete window.__backupExportOriginalClick; delete window.__backupExportBlob; delete window.__backupExportFilename');
-  await cdp("DOM.setFileInputFiles", { files: [partialBackupPath], nodeId: backupInput.nodeId });
+  await setBackupFile(partialBackupPath);
   await delay(150);
   const afterPartialBackup = await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")');
   assert.deepEqual(afterPartialBackup, preRestore, "an incomplete backup must not clear or change any existing local workspace records");
   assert.equal(await evaluate('document.body.innerText.includes("Backup not restored")'), true, "invalid backup should report that restore was rejected");
-  await cdp("DOM.setFileInputFiles", { files: [oversizedBackupPath], nodeId: backupInput.nodeId });
+  await setBackupFile(oversizedBackupPath);
   await delay(150);
   assert.deepEqual(await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")'), preRestore, "a valid but oversized workspace must be rejected without changing current records");
-  assert.equal(await evaluate('document.body.innerText.includes("safe 1.8 MB")'), true, "oversized workspace should explain the safe persistence/sync bound");
+  const oversizedToast = await evaluate('document.querySelector("#toast").textContent');
+  assert.match(oversizedToast, /safe 1\.8 MB/i, "oversized workspace should explain the safe persistence/sync bound; toast was: " + oversizedToast);
   await evaluate('window.__restoreConfirm = window.confirm; window.confirm = () => false');
-  await cdp("DOM.setFileInputFiles", { files: [backupPath], nodeId: backupInput.nodeId });
+  await setBackupFile(backupPath);
   await delay(100);
   assert.deepEqual(await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")'), preRestore, "canceling the restore confirmation must preserve current records");
   await evaluate('window.confirm = window.__restoreConfirm; delete window.__restoreConfirm');
-  await cdp("DOM.setFileInputFiles", { files: [backupPath], nodeId: backupInput.nodeId });
+  await setBackupFile(backupPath);
   let restored = false;
   for (let i = 0; i < 50; i++) {
     restored = await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}").tasks || []).some(task => task.title === "Restored fixture task")');
@@ -677,6 +727,9 @@ try {
   }
   assert.equal(retryCompleted, true, "retry should resubmit the selected user turn and finalize a new response");
   await evaluate('document.querySelectorAll("[data-action=edit-message]").item(document.querySelectorAll("[data-action=edit-message]").length-1).click()');
+  // Editing uses the accessible in-app dialog; emulate typing the revised message
+  // and submitting it instead of assuming the dialog auto-submits like a prompt.
+  await evaluate('document.querySelector("#appDialogField0").value = "Edited smoke user turn"; document.querySelector("#appDialogForm").requestSubmit()');
   let editCompleted = false;
   for (let i = 0; i < 50; i++) {
     editCompleted = await evaluate('window.__editRetryCount === 2 && document.body.innerText.includes("Mock follow-up response 2") && !document.querySelector("[data-action=cancel-response]")');
@@ -718,6 +771,9 @@ try {
 
   // Verify confirmed workspace clearing is synchronized to the isolated server.
   await evaluate('document.querySelector("[data-view=settings]").click(); document.querySelector("[data-action=clear-data]").click()');
+  // The destructive action is deliberately confirmation-gated; explicitly
+  // submit its in-app confirmation dialog as a real user would.
+  await evaluate('document.querySelector("#appDialogForm").requestSubmit()');
   let workspaceCleared = false;
   for (let i = 0; i < 50; i++) {
     const clearResponse = await fetch(baseURL + "/api/data", { headers: { Authorization: "Bearer " + token } });

@@ -46,7 +46,8 @@ def normalize_workspace_payload(
     clean = dict(default_preferences)
     if isinstance(preferences.get("memoryEnabled"), bool):
         clean["memoryEnabled"] = preferences["memoryEnabled"]
-    if preferences.get("theme") in ("light", "dark", "system"):
+    allowed_themes = {"light", "dark", "system", "aurora", "midnight", "forest", "sunset", "ocean", "lavender", "rose", "sand", "graphite", "mint", "cobalt", "custom"}
+    if preferences.get("theme") in allowed_themes:
         clean["theme"] = preferences["theme"]
     if preferences.get("density") in ("Comfortable", "Compact", "Spacious"):
         clean["density"] = preferences["density"]
@@ -58,6 +59,58 @@ def normalize_workspace_payload(
         and all(char in "0123456789abcdefABCDEF" for char in accent[1:])
     ):
         clean["accent"] = accent
+    # Presentation-only custom palettes and advanced appearance are bounded
+    # and normalized at the authoritative private workspace boundary.
+    color_keys = ("bg", "surface", "surface2", "text", "muted", "line", "sidebar", "bubble", "accent")
+    custom_themes = preferences.get("customThemes")
+    if isinstance(custom_themes, list):
+        valid_themes = []
+        for theme in custom_themes[:24]:
+            if not isinstance(theme, dict):
+                continue
+            name = theme.get("name")
+            if not isinstance(name, str) or not name.strip() or len(name) > 40:
+                continue
+            if all(isinstance(theme.get(key), str) and len(theme[key]) == 7 and theme[key].startswith("#") and all(c in "0123456789abcdefABCDEF" for c in theme[key][1:]) for key in color_keys):
+                valid_themes.append({"name": name.strip(), **{key: theme[key].lower() for key in color_keys}})
+        clean["customThemes"] = valid_themes
+        selected_theme = preferences.get("theme")
+        if isinstance(selected_theme, str) and selected_theme in {theme["name"] for theme in valid_themes}:
+            clean["theme"] = selected_theme
+    workspace_appearance = preferences.get("workspaceAppearance")
+    if isinstance(workspace_appearance, dict):
+        allowed_workspaces = {"home", "chat", "tasks", "projects", "research", "knowledge", "learning", "lab", "coding", "progress"}
+        allowed_layouts = {"default", "compact", "focused"}
+        valid_workspace_appearance = {}
+        for key, item in list(workspace_appearance.items())[:10]:
+            if key not in allowed_workspaces or not isinstance(item, dict):
+                continue
+            theme = item.get("theme", "global")
+            if not isinstance(theme, str) or len(theme) > 40 or not (theme in allowed_themes or theme == "global"):
+                # Named custom themes are permitted only when present in the validated palette list.
+                if not (isinstance(theme, str) and theme in {t["name"] for t in clean.get("customThemes", [])}):
+                    theme = "global"
+            accent = item.get("accent", "")
+            if not isinstance(accent, str) or not (len(accent) == 7 and accent.startswith("#") and all(c in "0123456789abcdefABCDEF" for c in accent[1:])):
+                accent = ""
+            density = item.get("density", "global")
+            if density not in {"global", "Compact", "Comfortable", "Spacious"}:
+                density = "global"
+            layout = item.get("layout", "default")
+            if layout not in allowed_layouts:
+                layout = "default"
+            valid_workspace_appearance[key] = {"theme": theme, "accent": accent.lower(), "density": density, "layout": layout}
+        clean["workspaceAppearance"] = valid_workspace_appearance
+    appearance = preferences.get("appearance")
+    if isinstance(appearance, dict):
+        clean["appearance"] = {
+            "fontSize": appearance.get("fontSize") if appearance.get("fontSize") in (13, 15, 17, 19) else 15,
+            "radius": appearance.get("radius") if appearance.get("radius") in (8, 12, 18, 24) else 12,
+            "sidebar": appearance.get("sidebar") if appearance.get("sidebar") in ("solid", "subtle", "bordered") else "solid",
+            "message": appearance.get("message") if appearance.get("message") in ("soft", "outlined", "minimal") else "soft",
+            "contrast": appearance.get("contrast") if appearance.get("contrast") in ("normal", "high") else "normal",
+            "motion": appearance.get("motion") if appearance.get("motion") in ("system", "reduced", "full") else "system",
+        }
     return merged, clean
 
 

@@ -240,6 +240,14 @@ class PrivateServerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "last message must be from you"):
             server.build_chat_context("main", [{"role": "assistant", "content": "answer"}])
 
+    def test_visual_prompt_documents_all_supported_blocks_and_tangent_constraints(self):
+        context, _ = server.build_chat_context("main", [{"role": "user", "content": "Explain a derivative visually"}])
+        prompt = context[0]["content"]
+        for block_type in ("sparkle-card", "sparkle-table", "sparkle-chart", "sparkle-diagram", "sparkle-prompt", "sparkle-graph", "sparkle-steps", "sparkle-robot_arm"):
+            self.assertIn(block_type, prompt)
+        self.assertIn("tangent?:{kind:quadratic,x:number}", prompt)
+        self.assertIn("robot_arm={title?,link1:positive number,link2:positive number}", prompt)
+
     def test_health_provider_check_is_cached_between_polls(self):
         class FakeResponse:
             def __enter__(self): return self

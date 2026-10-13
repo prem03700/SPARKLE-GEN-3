@@ -34,6 +34,7 @@
         <button class="nav-item" data-view="knowledge"><span class="nav-icon">▤</span><span class="nav-text">Knowledge</span></button>
         <button class="nav-item" data-view="tasks"><span class="nav-icon">☷</span><span class="nav-text">Tasks & goals</span></button>
         <button class="nav-item" data-view="progress"><span class="nav-icon">◷</span><span class="nav-text">Progress</span></button>
+        <button class="nav-item" data-view="appearance"><span class="nav-icon">◒</span><span class="nav-text">Themes & appearance</span></button>
         <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span><span class="nav-text">Settings</span></button>
         <div class="profile-row"><div class="avatar">P</div><div class="profile-copy"><strong>Personal account</strong><small>Private workspace</small></div><button class="icon-button" id="profileMenu" aria-label="Account menu">···</button></div>
       </div>
@@ -42,7 +43,7 @@
       <header class="topbar">
         <button class="icon-button mobile-menu" id="mobileMenu" aria-label="Open navigation">☰</button>
         <div class="breadcrumbs"><span id="breadcrumbWorkspace">Main assistant</span><span class="crumb-sep">/</span><span id="breadcrumbPage">Conversation</span></div>
-        <div class="topbar-actions"><span class="preview-pill" id="connectionPill"><span></span> Private · checking</span><button class="icon-button" id="themeToggle" title="Toggle light/dark theme" aria-label="Toggle theme">◐</button><button class="icon-button" id="openThemeStudio" title="Customize appearance" aria-label="Customize appearance">◒</button></div>
+        <label class="global-search" for="globalSearchInput"><span aria-hidden="true">⌕</span><input id="globalSearchInput" type="search" placeholder="Search anything…" autocomplete="off" aria-label="Search workspace"><kbd>Ctrl K</kbd></label><div class="topbar-actions"><span class="preview-pill" id="connectionPill"><span></span> Private · checking</span><button class="icon-button" id="themeToggle" title="Toggle light/dark theme" aria-label="Toggle theme">◐</button><button class="icon-button" id="openThemeStudio" title="Customize appearance" aria-label="Customize appearance">◒</button></div>
       </header>
       <section id="viewRoot" class="view-root" aria-live="polite"></section>
     </main>

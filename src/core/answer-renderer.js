@@ -1,5 +1,7 @@
 const MAX_TEXT = 500;
 const TYPES = new Set(["card", "table", "chart", "diagram", "prompt", "graph", "steps", "robot_arm"]);
+const minGraphX = points => Math.min(...points.map(point => point.x));
+const maxGraphX = points => Math.max(...points.map(point => point.x));
 
 export function validateAnswerBlock(value, expectedType = "") {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, error: "Expected an object." };
@@ -40,7 +42,14 @@ export function validateAnswerBlock(value, expectedType = "") {
     if (points.length < 2 || points.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y) || Math.abs(point.x) > 1e9 || Math.abs(point.y) > 1e9)) {
       return { ok: false, error: "A graph needs 2–24 points with finite numeric x and y values." };
     }
-    return { ok: true, value: { type, title: clean(value.title, 160), xLabel: clean(value.xLabel, 60), yLabel: clean(value.yLabel, 60), points } };
+    let tangent = null;
+    if (value.tangent !== undefined) {
+      if (!value.tangent || typeof value.tangent !== "object" || value.tangent.kind !== "quadratic") return { ok: false, error: "Graph tangent must use a supported function model." };
+      const x = value.tangent.x === undefined ? 0 : value.tangent.x;
+      if (!Number.isFinite(x) || x < minGraphX(points) || x > maxGraphX(points)) return { ok: false, error: "Tangent position must fall inside the plotted x range." };
+      tangent = { kind: "quadratic", x };
+    }
+    return { ok: true, value: { type, title: clean(value.title, 160), xLabel: clean(value.xLabel, 60), yLabel: clean(value.yLabel, 60), points, tangent } };
   }
   if (type === "robot_arm") {
     const link1=Number(value.link1),link2=Number(value.link2);
@@ -94,15 +103,24 @@ export function renderAnswerBlock(input, expectedType = "") {
     const xs = value.points.map(point => point.x), ys = value.points.map(point => point.y);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
     const spanX = maxX - minX || 1, spanY = maxY - minY || 1;
-    const coords = value.points.map(point => ({
-      x: 28 + ((point.x - minX) / spanX) * 344,
-      y: 156 - ((point.y - minY) / spanY) * 128
-    }));
+    const mapX = x => 28 + ((x - minX) / spanX) * 344;
+    const mapY = y => 156 - ((y - minY) / spanY) * 128;
+    const coords = value.points.map(point => ({ x: mapX(point.x), y: mapY(point.y) }));
     const path = coords.map((point, i) => (i ? "L" : "M") + point.x.toFixed(2) + " " + point.y.toFixed(2)).join(" ");
+    let tangent = "";
+    let controls = "";
+    if (value.tangent) {
+      const a = value.tangent.x;
+      tangent = '<path data-tangent-line class="answer-tangent-line" d="M ' + mapX(minX).toFixed(2) + ' ' + mapY(2*a*minX-a*a).toFixed(2) + ' L ' + mapX(maxX).toFixed(2) + ' ' + mapY(2*a*maxX-a*a).toFixed(2) + '"/>' +
+        '<circle data-tangent-point class="answer-tangent-point" cx="' + mapX(a).toFixed(2) + '" cy="' + mapY(a*a).toFixed(2) + '" r="5"/>';
+      controls = '<div class="answer-tangent-controls" data-tangent-graph data-min-x="' + minX + '" data-max-x="' + maxX + '" data-min-y="' + minY + '" data-max-y="' + maxY + '" data-initial-x="' + a + '">' +
+        '<label>Tangent point x = <output data-tangent-value>' + a + '</output><input data-tangent-slider type="range" min="' + minX + '" max="' + maxX + '" step="0.1" value="' + a + '" aria-label="Move tangent point along the curve"/></label>' +
+        '<p data-tangent-slope aria-live="polite">At x = ' + a + ', slope f′(x) = ' + (2*a) + '</p><button type="button" class="soft-button" data-tangent-reset>Reset tangent</button></div>';
+    }
     return (value.title ? '<h3 class="answer-block-title">' + e(value.title) + '</h3>' : "") +
       '<figure class="answer-line-graph"><svg viewBox="0 0 400 190" role="img" aria-label="' + e(value.title || "Line graph") + '" class="answer-graph-svg"><path class="answer-graph-grid" d="M28 28H372 M28 70H372 M28 113H372 M28 156H372 M28 28V156 M114 28V156 M200 28V156 M286 28V156 M372 28V156"/><path class="answer-graph-axis" d="M28 20V156H380"/><path class="answer-graph-line" pathLength="1" d="' + path + '"/>' +
       coords.map((point, i) => '<circle class="answer-graph-point" cx="' + point.x.toFixed(2) + '" cy="' + point.y.toFixed(2) + '" r="3.5"><title>' + e(value.points[i].label || ("(" + value.points[i].x + ", " + value.points[i].y + ")")) + '</title></circle>').join("") +
-      '<text x="200" y="184" text-anchor="middle" class="answer-graph-label">' + e(value.xLabel) + '</text><text x="9" y="92" text-anchor="middle" class="answer-graph-label" transform="rotate(-90 9 92)">' + e(value.yLabel) + '</text></svg></figure>';
+      tangent + '<text x="200" y="184" text-anchor="middle" class="answer-graph-label">' + e(value.xLabel) + '</text><text x="9" y="92" text-anchor="middle" class="answer-graph-label" transform="rotate(-90 9 92)">' + e(value.yLabel) + '</text></svg>' + controls + '</figure>';
   }
   if (value.type === "robot_arm") {
     return '<section class="answer-robot-arm" data-robot-arm data-link1="'+value.link1+'" data-link2="'+value.link2+'"><h3 class="answer-block-title">'+e(value.title)+'</h3><p>Move the joint sliders. The arm and end-effector coordinates update from forward kinematics.</p><div class="robot-arm-controls"><label>Base angle θ₁ <output data-angle1>45°</output><input type="range" min="-180" max="180" value="45" step="1" data-angle="1" aria-label="Base joint angle"></label><label>Elbow angle θ₂ <output data-angle2>35°</output><input type="range" min="-180" max="180" value="35" step="1" data-angle="2" aria-label="Elbow joint angle"></label></div><svg class="robot-arm-svg" viewBox="-2.5 -2.5 5 5" role="img" aria-label="Interactive two-link robot arm"><path class="robot-grid" d="M-2 0H2 M0 -2V2"/><circle class="robot-base" cx="0" cy="0" r=".07"/><path data-arm-link1 class="robot-link" d="M0 0L0 0"/><path data-arm-link2 class="robot-link robot-link-secondary" d="M0 0L0 0"/><circle data-arm-elbow class="robot-joint" cx="0" cy="0" r=".07"/><circle data-arm-tip class="robot-tip" cx="0" cy="0" r=".06"/></svg><p aria-live="polite">End effector: <strong data-arm-coordinates>(—, —)</strong></p><p class="robot-arm-equations">x = L₁ cos θ₁ + L₂ cos(θ₁ + θ₂)<br>y = L₁ sin θ₁ + L₂ sin(θ₁ + θ₂)</p><button type="button" class="soft-button" data-arm-reset>Reset angles</button></section>';
