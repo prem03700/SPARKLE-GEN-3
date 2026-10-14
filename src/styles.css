@@ -452,3 +452,74 @@ body.chat-fullscreen .chat-layout{max-width:none}
 #app[data-dimension="3d"][data-motif="flow"] .nav-item.active{border-radius:999px;box-shadow:inset 3px 0 0 var(--accent),0 4px 14px color-mix(in srgb,var(--accent) 12%,transparent)}
 @media(prefers-reduced-motion:no-preference){#app[data-dimension="3d"] .panel-card,#app[data-dimension="3d"] .message,#app[data-dimension="3d"] .primary-button,#app[data-dimension="3d"] .soft-button{transition:box-shadow .22s ease,transform .22s ease}#app[data-dimension="3d"] .panel-card:hover{box-shadow:0 3px 0 #0001,0 14px 28px #0003,inset 0 1px #ffffff16}}
 @media(prefers-reduced-motion:reduce){#app[data-dimension="3d"] *{transition:none!important;animation:none!important}}
+
+/* Accessible, low-noise file drop targets for chat and Knowledge. */
+body.file-drop-active #viewRoot{position:relative}
+body.file-drop-active #viewRoot::after{content:"Drop file to attach";position:fixed;z-index:40;inset:76px 24px 24px 288px;display:flex;align-items:center;justify-content:center;border:2px dashed var(--accent);border-radius:18px;background:color-mix(in srgb,var(--surface) 92%,transparent);color:var(--text);font-size:16px;font-weight:600;letter-spacing:.01em;pointer-events:none;box-shadow:inset 0 0 0 5px color-mix(in srgb,var(--accent) 7%,transparent)}
+body.file-drop-knowledge #viewRoot::after{content:"Drop documents to import into Knowledge"}
+body.file-drop-chat #viewRoot::after{content:"Drop a supported text file to attach to your next message"}
+@media(max-width:900px){body.file-drop-active #viewRoot::after{inset:70px 14px 14px 244px}}
+@media(max-width:680px){body.file-drop-active #viewRoot::after{inset:64px 10px 10px;border-radius:14px;font-size:14px;text-align:center;padding:20px}}
+
+/* Per-component 3D controls: no component is forced to inherit depth when disabled. */
+.appearance-component-controls{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:10px 18px;margin:4px 0 10px;padding:12px;border:1px solid var(--line);border-radius:var(--radius);min-width:0}
+.appearance-component-controls legend{padding:0 6px;font-weight:600}
+.appearance-component-controls label{display:flex;align-items:center;gap:7px;font-size:.92rem}
+.appearance-component-controls input{accent-color:var(--accent)}
+#app[data-dimension="3d"][data-depth-panels="off"] .panel-card,
+#app[data-dimension="3d"][data-depth-panels="off"] .theme-option,
+#app[data-dimension="3d"][data-depth-panels="off"] .workspace-card{box-shadow:none!important;background-image:none!important;backdrop-filter:none!important;transform:none!important}
+#app[data-dimension="3d"][data-depth-messages="off"] .message{box-shadow:none!important;background-image:none!important}
+#app[data-dimension="3d"][data-depth-buttons="off"] .primary-button,
+#app[data-dimension="3d"][data-depth-buttons="off"] .soft-button{box-shadow:none!important;transform:none!important}
+#app[data-dimension="3d"][data-depth-navigation="off"] .nav-item.active{box-shadow:none!important}
+#app[data-dimension="3d"][data-depth-background="on"][data-motif="flow"]{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='320' height='200' viewBox='0 0 320 200'%3E%3Cg fill='none' stroke='%2389dfe2' stroke-opacity='.075' stroke-width='1.2'%3E%3Cpath d='M-30 70 C25 0 70 140 130 70 S235 0 290 70 S350 125 370 50'/%3E%3Cpath d='M-30 82 C25 12 70 152 130 82 S235 12 290 82 S350 137 370 62'/%3E%3Cpath d='M-30 94 C25 24 70 164 130 94 S235 24 290 94 S350 149 370 74'/%3E%3C/g%3E%3C/svg%3E");background-size:320px 200px;background-attachment:fixed}
+#app[data-depth-background="off"]{background-image:none!important}
+
+/* Keep visual payloads stable while tokens arrive; reveal the completed visual once parsed. */
+.visual-stream-status{display:flex;align-items:center;gap:8px;margin:10px 0;padding:9px 11px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--muted);font-size:12px}
+.visual-stream-indicator{width:7px;height:7px;flex:none;border-radius:50%;background:var(--accent);animation:visual-stream-pulse 1s ease-in-out infinite}
+@keyframes visual-stream-pulse{50%{opacity:.35;transform:scale(.85)}}
+@media(prefers-reduced-motion:reduce){.visual-stream-indicator{animation:none!important}}
+
+/* Sculpted ribbon treatment: broad shaded bands, inner highlights, and nested contour ridges. */
+#app[data-dimension="3d"][data-motif="flow"][data-depth-panels="on"] .panel-card::after,
+#app[data-dimension="3d"][data-motif="flow"][data-depth-messages="on"] .message::after{
+  opacity:.42;
+  background-image:
+    radial-gradient(ellipse at 8% 5%,color-mix(in srgb,var(--accent) 12%,transparent),transparent 44%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='420' height='240' viewBox='0 0 420 240'%3E%3Cdefs%3E%3ClinearGradient id='r' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%2376f0e5' stop-opacity='.65'/%3E%3Cstop offset='.48' stop-color='%2385a9e9' stop-opacity='.34'/%3E%3Cstop offset='1' stop-color='%23c080f2' stop-opacity='.55'/%3E%3C/linearGradient%3E%3ClinearGradient id='h' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop stop-color='%23ffffff' stop-opacity='.62'/%3E%3Cstop offset='1' stop-color='%23ffffff' stop-opacity='0'/%3E%3C/linearGradient%3E%3Cfilter id='s'%3E%3CfeGaussianBlur stdDeviation='2'/%3E%3C/filter%3E%3C/defs%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M-30 150 C40 20 90 230 165 120 S280 10 350 100 S420 150 450 55' stroke='%23000000' stroke-opacity='.34' stroke-width='27' filter='url(%23s)'/%3E%3Cpath d='M-30 142 C40 12 90 222 165 112 S280 2 350 92 S420 142 450 47' stroke='url(%23r)' stroke-width='22'/%3E%3Cpath d='M-30 136 C40 6 90 216 165 106 S280 -4 350 86 S420 136 450 41' stroke='url(%23h)' stroke-opacity='.7' stroke-width='2'/%3E%3Cpath d='M-30 163 C40 33 90 243 165 133 S280 23 350 113 S420 163 450 68' stroke='%23a5d8ff' stroke-opacity='.35' stroke-width='1.5'/%3E%3Cpath d='M-30 174 C40 44 90 254 165 144 S280 34 350 124 S420 174 450 79' stroke='%23d9a8ff' stroke-opacity='.22' stroke-width='1'/%3E%3C/g%3E%3C/svg%3E");
+  background-size:100% 100%,420px 240px;
+  background-position:center,center;
+}
+#app[data-dimension="3d"][data-motif="flow"][data-depth-background="on"]{
+  background-image:
+    radial-gradient(ellipse at 12% 0%,color-mix(in srgb,var(--accent) 7%,transparent),transparent 44%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='560' height='360' viewBox='0 0 560 360'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop stop-color='%2376f0e5' stop-opacity='.18'/%3E%3Cstop offset='.5' stop-color='%2399a6ff' stop-opacity='.1'/%3E%3Cstop offset='1' stop-color='%23df8cff' stop-opacity='.17'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M-60 210 C50 15 135 325 245 145 S430 15 510 150 S600 230 630 80' stroke='%23000000' stroke-opacity='.18' stroke-width='28'/%3E%3Cpath d='M-60 200 C50 5 135 315 245 135 S430 5 510 140 S600 220 630 70' stroke='url(%23g)' stroke-width='23'/%3E%3Cpath d='M-60 194 C50 -1 135 309 245 129 S430 -1 510 134 S600 214 630 64' stroke='%23ffffff' stroke-opacity='.12' stroke-width='2'/%3E%3Cpath d='M-60 224 C50 29 135 339 245 159 S430 29 510 164 S600 244 630 94' stroke='%23a6dfff' stroke-opacity='.1' stroke-width='1.5'/%3E%3C/g%3E%3C/svg%3E");
+  background-size:100% 100%,560px 360px;
+  background-attachment:fixed;
+}
+#app[data-dimension="2d"]{background-image:none}
+#app[data-dimension="3d"][data-motif="flow"] .panel-card,
+#app[data-dimension="3d"][data-motif="flow"] .message{overflow:hidden}
+#app[data-dimension="3d"][data-motif="flow"] .panel-card>*,
+#app[data-dimension="3d"][data-motif="flow"] .message>*{position:relative;z-index:1}
+#app[data-dimension="3d"][data-depth-panels="off"] .panel-card::after,
+#app[data-dimension="3d"][data-depth-messages="off"] .message::after{display:none}
+#app[data-dimension="3d"][data-depth-background="off"]{background-image:none!important}
+
+/* User-adjustable strength for the reusable shape motif and its perceived depth. */
+.motif-intensity-field,.motif-depth-field{flex:1 1 220px;min-width:180px;margin-top:8px}
+.motif-intensity-field label,.motif-depth-field label{display:flex;justify-content:space-between;gap:12px}
+.motif-intensity-field output,.motif-depth-field output{font-variant-numeric:tabular-nums;color:var(--muted)}
+.motif-intensity-field input[type=range],.motif-depth-field input[type=range]{width:100%;accent-color:var(--accent)}
+#app[data-dimension="3d"] .panel-card,
+#app[data-dimension="3d"] .theme-option,
+#app[data-dimension="3d"] .workspace-card,
+#app[data-dimension="3d"] .message{box-shadow:0 1px 0 color-mix(in srgb,var(--text) 8%,transparent),0 calc(14px * var(--depth-strength, .55)) calc(32px * var(--depth-strength, .55)) #0003,inset 0 1px 0 #ffffff12}
+#app[data-dimension="3d"][data-motif="flow"][data-depth-panels="on"] .panel-card::after,
+#app[data-dimension="3d"][data-motif="flow"][data-depth-messages="on"] .message::after{opacity:calc(.72 * var(--motif-intensity, .45))}
+#app[data-dimension="3d"][data-depth-background="on"]{background-color:var(--bg)}
+#app[data-dimension="3d"][data-depth-background="on"][data-motif="flow"]{background-blend-mode:normal,normal}
+#app[data-dimension="3d"][data-motif="glass"][data-depth-panels="on"] .panel-card{backdrop-filter:blur(calc(24px * var(--depth-strength, .55)))}
+#app[data-dimension="3d"][data-motif="skeuomorphic"][data-depth-panels="on"] .panel-card{box-shadow:calc(8px * var(--depth-strength, .55)) calc(9px * var(--depth-strength, .55)) 0 color-mix(in srgb,var(--line) 55%,transparent),inset 0 1px #ffffff18}

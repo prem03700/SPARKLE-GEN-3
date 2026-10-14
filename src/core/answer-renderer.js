@@ -134,6 +134,30 @@ export function renderAnswerBlock(input, expectedType = "") {
   return '<section class="answer-prompt"><p>' + e(value.text) + '</p><button type="button" class="answer-prompt-button" data-answer-prompt="' + e(value.text) + '">Use as next message ↗</button></section>';
 }
 
+/** Keeps incomplete structured visual payloads out of the live token-by-token preview. */
+export function streamingAnswerPreview(raw) {
+  const source = String(raw ?? "");
+  const sparkle = /```sparkle(?:-[a-z_]+)?\b/i.exec(source);
+  if (sparkle) return { text: source.slice(0, sparkle.index).trimEnd(), visualPending: true };
+  const fences = [...source.matchAll(/```/g)];
+  const partial = /```sparkle(?:-[a-z_]*)?$/i.exec(source);
+  if (partial) return { text: source.slice(0, partial.index).trimEnd(), visualPending: true };
+  for (const opening of fences) {
+    const rest = source.slice(opening.index + 3);
+    const label = rest.split(/[\r\n]/, 1)[0].trim();
+    // Generic JSON fences are also used for visual schemas. Hold the complete
+    // visual block and following tokens until final render, avoiding SVG/DOM
+    // reconstruction on every stream frame.
+    const genericVisualJson = /^json$/i.test(label) && /(?:\"type\"\s*:|\"edges\"\s*:|\"points\"\s*:|\"steps\"\s*:|\"link1\"\s*:)/i.test(rest);
+    if (genericVisualJson) return { text: source.slice(0, opening.index).trimEnd(), visualPending: true };
+  }
+  if (fences.length % 2) {
+    const opening = fences.at(-1);
+    return { text: source.slice(0, opening.index).trimEnd(), visualPending: false };
+  }
+  return { text: source, visualPending: false };
+}
+
 /** Recognizes only explicit fenced SPARKLE JSON blocks; invalid blocks remain ordinary code. */
 export function prepareStructuredAnswer(raw) {
   const blocks = [];

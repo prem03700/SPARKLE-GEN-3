@@ -219,6 +219,15 @@ try {
 
   await evaluate('document.querySelector("[data-view=settings]").click()');
   await evaluate(`document.querySelector("#deviceName").value = "Isolated browser test"; document.querySelector("#pairingCode").value = ${JSON.stringify(pairingCode)}; document.querySelector("[data-action=pair-device]").click()`);
+  // The first sync can ask whether pre-existing local records should be imported.
+  // Accept that explicit in-app dialog in this isolated smoke-test profile.
+  for (let i = 0; i < 100; i++) {
+    const dialogOpen = await evaluate('!!document.querySelector("#appDialog")?.open');
+    if (dialogOpen) { await evaluate('document.querySelector("#appDialogSubmit").click()'); break; }
+    const alreadyPaired = await evaluate('document.body.innerText.includes("Paired · private server")');
+    if (alreadyPaired) break;
+    await delay(50);
+  }
   let paired = false;
   for (let i = 0; i < 100; i++) {
     paired = await evaluate('document.body.innerText.includes("Paired · private server")');
@@ -265,7 +274,9 @@ try {
   const proposals = (await proposalResponse.json()).proposals;
   const proposal = proposals.find(item => item.title === "Browser smoke command proposal");
   assert.ok(proposal?.id, "proposal should have a durable server-generated ID");
-  await evaluate('window.__proposalOriginalConfirm = window.confirm; window.confirm = () => true; document.querySelector(\'[data-action="decide-core-proposal"][data-decision="approved"]\').click()');
+  await evaluate('document.querySelector(\'[data-action="decide-core-proposal"][data-decision="approved"]\').click()');
+  for (let i = 0; i < 50; i++) { if (await evaluate('!!document.querySelector("#appDialog")?.open')) break; await delay(20); }
+  await evaluate('if(document.querySelector("#appDialog")?.open) document.querySelector("#appDialogSubmit").click()');
   let proposalApproved = false;
   for (let i = 0; i < 50; i++) {
     const response = await fetch(`${baseURL}/api/core/proposals`, { headers: { Authorization: `Bearer ${token}` } });
@@ -288,7 +299,9 @@ try {
     await delay(100);
   }
   assert.equal(taskProposalVisible, true, "task proposal should be shown before approval");
-  await evaluate('window.__proposalOriginalConfirm = window.confirm; window.confirm = () => true; document.querySelector("[data-action=decide-core-proposal][data-decision=approved]").click()');
+  await evaluate('document.querySelector("[data-action=decide-core-proposal][data-decision=approved]").click()');
+  for (let i = 0; i < 50; i++) { if (await evaluate('!!document.querySelector("#appDialog")?.open')) break; await delay(20); }
+  await evaluate('if(document.querySelector("#appDialog")?.open) document.querySelector("#appDialogSubmit").click()');
   let coreTaskSaved = false;
   for (let i = 0; i < 50; i++) {
     const response = await fetch(baseURL + "/api/data", { headers: { Authorization: "Bearer " + token } });
@@ -608,12 +621,14 @@ try {
   assert.deepEqual(await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")'), preRestore, "a valid but oversized workspace must be rejected without changing current records");
   const oversizedToast = await evaluate('document.querySelector("#toast").textContent');
   assert.match(oversizedToast, /safe 1\.8 MB/i, "oversized workspace should explain the safe persistence/sync bound; toast was: " + oversizedToast);
-  await evaluate('window.__restoreConfirm = window.confirm; window.confirm = () => false');
   await setBackupFile(backupPath);
-  await delay(100);
+  for (let i = 0; i < 50; i++) { if (await evaluate('!!document.querySelector("#appDialog")?.open')) break; await delay(20); }
+  await evaluate('if(document.querySelector("#appDialog")?.open) document.querySelector("#appDialog").querySelector("[data-dialog-cancel]").click()');
+  await delay(50);
   assert.deepEqual(await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}")'), preRestore, "canceling the restore confirmation must preserve current records");
-  await evaluate('window.confirm = window.__restoreConfirm; delete window.__restoreConfirm');
   await setBackupFile(backupPath);
+  for (let i = 0; i < 50; i++) { if (await evaluate('!!document.querySelector("#appDialog")?.open')) break; await delay(20); }
+  await evaluate('if(document.querySelector("#appDialog")?.open) document.querySelector("#appDialogSubmit").click()');
   let restored = false;
   for (let i = 0; i < 50; i++) {
     restored = await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1") || "{}").tasks || []).some(task => task.title === "Restored fixture task")');

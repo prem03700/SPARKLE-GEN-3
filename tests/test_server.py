@@ -319,7 +319,11 @@ class PrivateServerTests(unittest.TestCase):
             self.assertIn("frame-ancestors 'none'", csp)
             self.assertIn("img-src 'self' data: blob:", csp)
             self.assertIn("media-src 'self' blob:", csp)
-            self.assertIn("connect-src 'self' ws: wss:", csp)
+            expected_socket_scheme = "wss" if server.TLS_ENABLED else "ws"
+            self.assertIn(f"connect-src 'self' {expected_socket_scheme}://", csp)
+            self.assertNotIn(" ws: wss:", csp)
+            self.assertNotIn(" ws:;", csp)
+            self.assertNotIn(" wss:;", csp)
             self.assertIn("microphone=(self)", response.headers.get("Permissions-Policy", ""))
             self.assertEqual(response.headers.get("Cache-Control"), "no-cache")
         with urlopen(self.base + "/api/health", timeout=4) as response:
@@ -807,7 +811,7 @@ class PrivateServerTests(unittest.TestCase):
             self.assertEqual(captured["payload"]["model"], "nvidia/nemotron-3.5-lightning-30b-a3b")
             self.assertFalse(captured["payload"]["stream"])
             self.assertEqual(captured["payload"]["chat_template_kwargs"], {"enable_thinking": False})
-            self.assertEqual(captured["timeout"], 90)
+            self.assertEqual(captured["timeout"], 180)
         finally:
             server.MODEL_PROVIDER, server.MODEL, server.NVIDIA_API_KEY = old
 
@@ -1031,7 +1035,9 @@ class PrivateServerTests(unittest.TestCase):
             self.assertEqual((mime, extension), ("image/png", ".png"))
             self.assertEqual(captured["url"], server.NVIDIA_IMAGE_URL)
             self.assertEqual(captured["authorization"], "Bearer fixture-image-key")
-            self.assertEqual(captured["payload"]["model"], server.NVIDIA_IMAGE_MODEL)
+            self.assertNotIn("model", captured["payload"])
+            self.assertNotIn("mode", captured["payload"])
+            self.assertEqual(captured["payload"]["cfg_scale"], 1)
             self.assertEqual(captured["timeout"], 120)
             class BadResponse(FakeResponse):
                 def read(self, limit=-1): return json.dumps({"data":[{"b64_json":"bm90YW5pbWFnZQ=="}]}).encode()

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { browserVoiceSupport, getSpeechRecognitionConstructor, voiceTextFromMarkdown, takeVoiceChunks } from "../src/core/voice-mode.js";
 
 test("voice capability detection supports standard and Chromium-prefixed recognition APIs",()=>{
@@ -47,4 +48,11 @@ test("voice streaming does not speak code fences and bounds long sentence chunks
   const long=takeVoiceChunks("word ".repeat(250),false);
   assert.ok(long.chunks.length>0);
   assert.ok(long.chunks.every(chunk=>chunk.length<=900));
+});
+
+
+test("active application voice path has no browser speech fallback", async()=>{
+  const app=await readFile(new URL("../src/app.js",import.meta.url),"utf8");
+  assert.doesNotMatch(app,/core\/voice-mode\.js|SpeechRecognition|speechSynthesis|SpeechSynthesisUtterance|startVoiceListening|speakVoiceResponse|queueVoiceDelta/);
+  assert.match(app,/Gemini Live is the only voice provider/);
 });

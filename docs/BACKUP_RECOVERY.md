@@ -25,26 +25,49 @@ A minimal Python pattern for an owner-run backup utility is:
 ```python
 import os
 import sqlite3
+import stat
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 source = Path("/home/prem-macharla/SPARKLE-GEN3/data/sparkle-gen3.sqlite3")
-destination = Path("/secure-local-staging/sparkle-gen3.sqlite3")
-destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+staging = Path("/secure-local-staging")  # Dedicated owner-controlled directory, outside the repo/web root.
+staging.mkdir(mode=0o700, parents=True, exist_ok=True)
+info = staging.stat()
+if staging.is_symlink() or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+    raise RuntimeError("Staging directory must be owner-owned and inaccessible to group/other users")
+if not source.is_file():
+    raise RuntimeError("Source database is not a regular file")
 
-src = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+destination = staging / f"sparkle-gen3-{stamp}-{os.getpid()}.sqlite3"
+fd, temporary_name = tempfile.mkstemp(prefix=".sparkle-gen3-", suffix=".partial", dir=staging)
+os.close(fd)
+temporary = Path(temporary_name)
+os.chmod(temporary, 0o600)
+src = dst = None
 try:
-    dst = sqlite3.connect(destination)
-    try:
-        src.backup(dst)
-        result = dst.execute("PRAGMA integrity_check").fetchone()
-        if not result or result[0] != "ok":
-            raise RuntimeError("SQLite integrity check failed")
-    finally:
-        dst.close()
-finally:
+    src = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+    dst = sqlite3.connect(temporary)
+    src.backup(dst)
+    result = dst.execute("PRAGMA integrity_check").fetchone()
+    if not result or result[0] != "ok":
+        raise RuntimeError("SQLite integrity check failed")
+    dst.close()
+    dst = None
     src.close()
+    src = None
+    # Hard-link publication fails rather than overwriting an existing recovery point.
+    os.link(temporary, destination)
+    os.chmod(destination, 0o600)
+finally:
+    if dst is not None:
+        dst.close()
+    if src is not None:
+        src.close()
+    temporary.unlink(missing_ok=True)
 
-os.chmod(destination, 0o600)
+print(f"Verified SQLite snapshot: {destination}")
 ```
 
 Replace the staging path with an owner-controlled directory outside the repository and web root. Ensure that directory is on a filesystem with sufficient space. Do not place the backup in a cloud-sync folder before encryption. The utility should use a unique timestamped filename, avoid overwriting the last known-good backup, and remove incomplete temporary files after failure.
@@ -79,4 +102,6 @@ A backup is accepted only when all are true:
 - [ ] Recovery key is available independently of the backup destination.
 - [ ] Owner records the drill result and knows how to restore without overwriting the only good copy.
 
-**Current limitation:** The project has passed an isolated SQLite backup/restore integrity drill, but no off-host destination, recurring rotation, alerting, or full application disaster-recovery drill has been configured or verified.
+**Latest verified local snapshot (2026-10-14):** The live authoritative SQLite database passed `PRAGMA integrity_check`. A consistent snapshot was created with SQLite's online backup API at `/home/prem-macharla/.local/state/sparkle/backups/sparkle-gen3-20261014T031344Z-344641.sqlite3` (owner-only mode `0600`, 278,528 bytes). The snapshot passed `PRAGMA integrity_check`, matched the source schema inventory (10 schema objects), and was restored into a separate disposable SQLite file that also passed integrity and schema checks. SHA-256: `aef17e60d66337c30fd105160860a96906cea47716b791c597e338ac28bdddc1`. No workspace rows were printed in the verification output.
+
+**Remaining limitation:** This is a single local, unencrypted snapshot protected by owner-only filesystem permissions; it is not an encrypted off-host backup. No owner-approved off-host destination, encryption/recovery-key arrangement, recurring rotation, alerting, or full application disaster-recovery drill has been configured or verified. The browser smoke test separately passes the application backup-export/validated-restore workflow, but that is not a substitute for a full disaster-recovery rehearsal.

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { prepareStructuredAnswer, renderAnswerBlock, renderPreparedAnswer, validateAnswerBlock } from "../src/core/answer-renderer.js";
+import { prepareStructuredAnswer, renderAnswerBlock, renderPreparedAnswer, streamingAnswerPreview, validateAnswerBlock } from "../src/core/answer-renderer.js";
 
 test("structured cards render escaped text and an inert follow-up control", () => {
   const result = validateAnswerBlock({title:"<unsafe>",body:"A card",prompt:"Explain more"}, "card");
@@ -78,4 +78,25 @@ test("recognized visual JSON in a generic fence renders as a diagram instead of 
   assert.match(html,/answer-diagram/);
   assert.match(html,/Sensor Feedback/);
   assert.doesNotMatch(html,/<pre class="response-code"><code>json/);
+});
+
+test("streaming preview withholds partial visual JSON until the block is complete", () => {
+  const before = streamingAnswerPreview("Here is the curve.\n\n```sparkle-graph\n{\"type\":\"graph\",");
+  assert.equal(before.text, "Here is the curve.");
+  assert.equal(before.visualPending, true);
+  const partialFence = streamingAnswerPreview("Intro\n```sparkle");
+  assert.equal(partialFence.text, "Intro");
+  assert.equal(partialFence.visualPending, true);
+  const ordinary = streamingAnswerPreview("A normal answer is streaming.");
+  assert.equal(ordinary.text, "A normal answer is streaming.");
+  assert.equal(ordinary.visualPending, false);
+  const ordinaryCode = streamingAnswerPreview("Example:\n```python\nprint(1)");
+  assert.equal(ordinaryCode.text, "Example:");
+  assert.equal(ordinaryCode.visualPending, false);
+  const genericJson = streamingAnswerPreview('Intro\n```json\n{"type":"diagram","edges":[["A","B"]');
+  assert.equal(genericJson.text, "Intro");
+  assert.equal(genericJson.visualPending, true);
+  const nonVisualJson = streamingAnswerPreview('Example:\n```json\n{"name":"ordinary data"');
+  assert.equal(nonVisualJson.text, "Example:");
+  assert.equal(nonVisualJson.visualPending, false);
 });

@@ -323,7 +323,7 @@ def request_model(messages):
     """Run exactly the selected provider. There is deliberately no implicit fallback."""
     if MODEL_PROVIDER == "ollama":
         payload = {"model": MODEL, "stream": False, "messages": messages,
-                   "options": {"temperature": 0.65, "num_predict": 512, "num_ctx": 8192},
+                   "options": {"temperature": 0.65, "num_predict": 4096, "num_ctx": 8192},
                    "think": False, "keep_alive": "10m"}
         request = urllib.request.Request(OLLAMA_URL + "/api/chat", data=json.dumps(payload).encode("utf-8"),
                                          headers={"Content-Type": "application/json"}, method="POST")
@@ -334,12 +334,12 @@ def request_model(messages):
         if not NVIDIA_API_KEY:
             raise RuntimeError("NVIDIA_API_KEY or SPARKLE_LLM_API_KEY is not configured in the server environment.")
         payload = {"model": MODEL, "stream": False, "messages": messages,
-                   "temperature": 0.65, "max_tokens": 512,
+                   "temperature": 0.65, "max_tokens": 4096,
                    "chat_template_kwargs": {"enable_thinking": False}}
         request = urllib.request.Request(NVIDIA_CHAT_URL, data=json.dumps(payload).encode("utf-8"),
                                          headers={"Authorization": "Bearer " + NVIDIA_API_KEY,
                                                   "Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(request, timeout=90) as response:
+        with urllib.request.urlopen(request, timeout=180) as response:
             result = json.loads(response.read(8_000_000).decode("utf-8"))
         choices = result.get("choices", [])
         message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
@@ -359,7 +359,7 @@ def stream_model(messages, on_response=None):
     """
     if MODEL_PROVIDER == "ollama":
         payload = {"model": MODEL, "stream": True, "messages": messages,
-                   "options": {"temperature": 0.65, "num_predict": 512, "num_ctx": 8192},
+                   "options": {"temperature": 0.65, "num_predict": 4096, "num_ctx": 8192},
                    "think": False, "keep_alive": "10m"}
         request = urllib.request.Request(OLLAMA_URL + "/api/chat", data=json.dumps(payload).encode("utf-8"),
                                          headers={"Content-Type": "application/json"}, method="POST")
@@ -386,13 +386,13 @@ def stream_model(messages, on_response=None):
     if not NVIDIA_API_KEY:
         raise RuntimeError("NVIDIA_API_KEY or SPARKLE_LLM_API_KEY is not configured in the server environment.")
     payload = {"model": MODEL, "stream": True, "messages": messages,
-               "temperature": 0.65, "max_tokens": 512,
+               "temperature": 0.65, "max_tokens": 4096,
                "chat_template_kwargs": {"enable_thinking": False}}
     request = urllib.request.Request(NVIDIA_CHAT_URL, data=json.dumps(payload).encode("utf-8"),
                                      headers={"Authorization": "Bearer " + NVIDIA_API_KEY,
                                               "Content-Type": "application/json",
                                               "Accept": "text/event-stream"}, method="POST")
-    with urllib.request.urlopen(request, timeout=90) as response:
+    with urllib.request.urlopen(request, timeout=180) as response:
         if on_response:
             on_response(response)
         try:
@@ -1085,12 +1085,12 @@ def request_generated_image(prompt):
     """Call NVIDIA's image endpoint without logging the prompt or returning provider credentials."""
     if not NVIDIA_API_KEY:
         raise RuntimeError("Image generation needs an NVIDIA API key in the protected server configuration.")
+    # This endpoint is model-specific; its inference schema does not take a model field.
     payload = {
-        "model": NVIDIA_IMAGE_MODEL,
         "prompt": prompt,
-        "mode": "Image Generation",
         "height": 1024,
         "width": 1024,
+        "cfg_scale": 1,
         "steps": 4,
         "seed": 0,
         "samples": 1,
@@ -1210,7 +1210,17 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         if TLS_ENABLED:
             self.send_header("Strict-Transport-Security", "max-age=31536000")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+        # Permit the authenticated same-origin voice relay only. Generic ws:/wss:
+        # schemes would let any page script connect to arbitrary WebSocket hosts.
+        host = self.headers.get("Host", "")
+        socket_scheme = "wss" if TLS_ENABLED else "ws"
+        socket_origin = f"{socket_scheme}://{host}" if re.fullmatch(r"[A-Za-z0-9.:-]+", host) else ""
+        connect_sources = "'self'" + (f" {socket_origin}" if socket_origin else "")
+        csp = ("default-src 'self'; script-src 'self'; "
+               f"connect-src {connect_sources}; "
+               "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+               "media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", csp)
         self.send_header("Permissions-Policy", "microphone=(self), camera=(), geolocation=(), payment=()")
         self.send_header("Cache-Control", "no-store" if self.path.startswith("/api/") else "no-cache")
         super().end_headers()
@@ -1572,7 +1582,14 @@ class Handler(SimpleHTTPRequestHandler):
                 image_bytes, mime_type, extension = request_generated_image(prompt)
             except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
                 status = 503
-                message = str(error) if isinstance(error, RuntimeError) and "API key" in str(error) else "Image generation failed. Check provider availability and try again."
+                if isinstance(error, RuntimeError) and "API key" in str(error):
+                    message = str(error)
+                elif isinstance(error, urllib.error.HTTPError):
+                    message = f"Image provider rejected the request (HTTP {error.code}). Check provider access and request parameters."
+                elif isinstance(error, TimeoutError):
+                    message = "Image provider took too long to respond. Try again."
+                else:
+                    message = "Image generation failed. Check provider availability and try again."
                 self.send_json(status, {"error": message, "detail": type(error).__name__}); return
             with database() as con:
                 total = con.execute("SELECT COALESCE(SUM(size_bytes),0) AS total FROM generated_images").fetchone()["total"]
