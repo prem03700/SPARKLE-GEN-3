@@ -101,6 +101,7 @@ if not is_loopback_host(HOST) and not TLS_ENABLED:
     raise RuntimeError("Refusing non-loopback binding without TLS. Configure SPARKLE_TLS_CERT and SPARKLE_TLS_KEY.")
 MAX_BODY = 2_000_000
 MAX_CHAT_ATTACHMENT_BYTES = 25 * 1024 * 1024
+MAX_KNOWLEDGE_IMPORT_BYTES = 50 * 1024 * 1024
 PAIR_TTL = 600
 PAIR_CODE = secrets.token_urlsafe(8)
 PAIR_CREATED = time.time()
@@ -430,8 +431,8 @@ def extract_document_text(filename, raw_bytes):
     suffix = Path(name).suffix.lower()
     if suffix not in {".pdf", ".docx", ".xlsx", ".pptx"}:
         raise ValueError("Supported document types are PDF, DOCX, XLSX, and PPTX.")
-    if not isinstance(raw_bytes, bytes) or not raw_bytes or len(raw_bytes) > 250_000:
-        raise ValueError("Documents must be non-empty and no larger than 250 KB.")
+    if not isinstance(raw_bytes, bytes) or not raw_bytes or len(raw_bytes) > MAX_KNOWLEDGE_IMPORT_BYTES:
+        raise ValueError("Documents must be non-empty and no larger than 50 MB.")
     if suffix == ".pdf":
         if not raw_bytes.startswith(b"%PDF-"):
             raise ValueError("The file does not have a valid PDF signature.")
@@ -1705,13 +1706,19 @@ class Handler(SimpleHTTPRequestHandler):
                 self.close_connection = True
                 self.send_json(400, {"error": "Transfer-encoded uploads are not supported."}); return
             name = Path(unquote(self.headers.get("X-Attachment-Name", "attachment.txt"))).name[:160]
-            if not re.fullmatch(r"[A-Za-z0-9_. -]{1,160}", name) or Path(name).suffix.lower() not in {".txt", ".md", ".csv", ".json", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".yaml", ".yml", ".toml", ".log", ".xml", ".sql", ".sh", ".c", ".h", ".cpp", ".hpp", ".java", ".rs", ".go"}:
-                self.send_json(400, {"error": "Choose a supported text or source-code file."}); return
+            supported_text = {".txt", ".md", ".markdown", ".rst", ".rtf", ".csv", ".tsv", ".json", ".ipynb", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".log", ".xml", ".html", ".htm", ".css", ".scss", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".svelte", ".py", ".pyw", ".java", ".kt", ".kts", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".dart", ".lua", ".r", ".m", ".sql", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".dockerfile", ".tf", ".graphql", ".proto", ".tex", ".env.example"}
+            document_types = {".pdf", ".docx", ".xlsx", ".pptx"}
+            suffix = Path(name).suffix.lower()
+            if not re.fullmatch(r"[A-Za-z0-9_. -]{1,160}", name) or suffix not in supported_text | document_types:
+                self.send_json(400, {"error": "Unsupported attachment. Use PDF, DOCX, XLSX, PPTX, or a supported text/code/data file."}); return
             try:
                 raw = self.rfile.read(size)
                 if len(raw) != size: raise ValueError("Incomplete upload.")
-                content = raw.decode("utf-8-sig")
-                if not content.strip() or "\0" in content: raise ValueError("File must contain readable UTF-8 text, not binary data.")
+                if suffix in document_types:
+                    content = extract_document_text(name, raw)
+                else:
+                    content = raw.decode("utf-8-sig")
+                if not content.strip() or "\0" in content: raise ValueError("File must contain readable text. Binary or damaged files are not supported.")
             except (UnicodeDecodeError, ValueError) as error:
                 self.send_json(400, {"error": str(error)[:200]}); return
             attachment_id = secrets.token_hex(16)
@@ -1723,6 +1730,45 @@ class Handler(SimpleHTTPRequestHandler):
                 write_audit(con, "chat.attachment_uploaded", device["id"], f"extension={Path(name).suffix.lower()}; bytes={size}")
             self.send_json(201, {"id": attachment_id, "name": name, "size_bytes": size})
             return
+        if path == "/api/knowledge/import-document":
+            device = self.authenticate()
+            if not device: return
+            if not limited(RESEARCH_LIMITS, device["id"], 10, 60):
+                self.send_json(429, {"error": "Document extraction is rate limited. Wait before trying again."}); return
+            raw_size = self.headers.get("Content-Length", "")
+            try: size = int(raw_size)
+            except ValueError: self.send_json(411, {"error": "Content-Length is required for document imports."}); return
+            if size < 1 or size > MAX_KNOWLEDGE_IMPORT_BYTES:
+                self.close_connection = True
+                self.send_json(413, {"error": "Knowledge imports must be between 1 byte and 50 MB."}); return
+            if self.headers.get("Transfer-Encoding"):
+                self.close_connection = True
+                self.send_json(400, {"error": "Transfer-encoded uploads are not supported."}); return
+            filename = Path(unquote(self.headers.get("X-Document-Name", "document.pdf"))).name[:160]
+            allowed_documents = {".pdf", ".docx", ".xlsx", ".pptx"}
+            allowed_text = {".txt", ".md", ".markdown", ".rst", ".rtf", ".csv", ".tsv", ".json", ".ipynb", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".log", ".xml", ".html", ".htm", ".css", ".scss", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".svelte", ".py", ".pyw", ".java", ".kt", ".kts", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".dart", ".lua", ".r", ".m", ".sql", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".tf", ".graphql", ".proto", ".tex"}
+            suffix = Path(filename).suffix.lower()
+            if suffix not in allowed_documents | allowed_text:
+                self.send_json(400, {"error": "Choose PDF, Word, Excel, PowerPoint, or a supported text/code/data file."}); return
+            try:
+                raw_bytes = self.rfile.read(size)
+                if len(raw_bytes) != size: raise ValueError("Incomplete upload.")
+                if suffix in allowed_documents:
+                    extracted = extract_document_text(filename, raw_bytes)
+                else:
+                    extracted = raw_bytes.decode("utf-8-sig")
+                    if not extracted.strip() or "\0" in extracted:
+                        raise ValueError("The file is empty or does not contain readable UTF-8 text.")
+                    if len(extracted) > 200_000:
+                        extracted = extracted[:200_000] + "\n[Extraction truncated at 200,000 characters.]"
+            except (ValueError, UnicodeDecodeError) as error:
+                self.send_json(400, {"error": str(error)[:200]}); return
+            with database() as con:
+                write_audit(con, "knowledge.document_extracted", device["id"],
+                            f"extension={Path(filename).suffix.lower()[:12]}; bytes={size}; chars={len(extracted)}")
+            self.send_json(200, {"filename": filename, "text": extracted,
+                                 "characters": len(extracted), "truncated": "[Extraction truncated at 200,000 characters.]" in extracted})
+            return
         if path == "/api/knowledge/extract":
             device = self.authenticate()
             if not device: return
@@ -1732,8 +1778,8 @@ class Handler(SimpleHTTPRequestHandler):
             if body is None: return
             filename = body.get("filename")
             encoded = body.get("content_base64")
-            if not isinstance(filename, str) or not isinstance(encoded, str) or len(encoded) > 340_000:
-                self.send_json(400, {"error": "Provide a supported document up to 250 KB."}); return
+            if not isinstance(filename, str) or not isinstance(encoded, str) or len(encoded) > 70_000_000:
+                self.send_json(400, {"error": "Provide a supported document up to 50 MB."}); return
             import base64
             try:
                 raw_bytes = base64.b64decode(encoded, validate=True)

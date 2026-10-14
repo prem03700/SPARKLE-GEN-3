@@ -39,8 +39,8 @@ class PrivateServerTests(unittest.TestCase):
             server.extract_document_text("broken.docx", b"not a zip file")
         with self.assertRaisesRegex(ValueError, "Supported document types"):
             server.extract_document_text("archive.exe", b"data")
-        with self.assertRaisesRegex(ValueError, "250 KB"):
-            server.extract_document_text("large.docx", b"x" * 250_001)
+        with self.assertRaisesRegex(ValueError, "50 MB"):
+            server.extract_document_text("large.docx", b"x" * (server.MAX_KNOWLEDGE_IMPORT_BYTES + 1))
 
     @unittest.skipUnless((Path.home() / ".local/opt/sparkle-ocr/usr/bin/tesseract").is_file() and Path("/usr/bin/pdftoppm").is_file(), "local OCR tools are not available")
     def test_scanned_pdf_uses_bounded_local_ocr_fallback(self):
