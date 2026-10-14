@@ -28,8 +28,7 @@ NVIDIA_MODELS_URL = "https://integrate.api.nvidia.com/v1/models"
 NVIDIA_IMAGE_URL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.2-klein-4b"
 NVIDIA_IMAGE_MODEL = "black-forest-labs/flux.2-klein-4b"
 # Optional private-host realtime voice settings are loaded from the owner-only config below.
-MAX_GENERATED_IMAGE_BYTES = 12 * 1024 * 1024
-MAX_GENERATED_IMAGE_STORAGE_BYTES = 200 * 1024 * 1024
+MAX_GENERATED_IMAGE_BYTES = 12 * 1024 * 1024  # Safety bound for a single provider artifact.
 def load_nvidia_api_key(path=None):
     """Read a key from the process environment or an owner-only GEN-3 config file."""
     from_environment = os.environ.get("NVIDIA_API_KEY") or os.environ.get("SPARKLE_LLM_API_KEY")
@@ -111,7 +110,6 @@ CHAT_LIMITS: dict[str, list[float]] = {}
 RESEARCH_LIMITS: dict[str, list[float]] = {}
 CORE_PROPOSAL_LIMITS: dict[str, list[float]] = {}
 SIMULATION_LIMITS: dict[str, list[float]] = {}
-IMAGE_LIMITS: dict[str, list[float]] = {}
 VOICE_LIMITS: dict[str, list[float]] = {}
 # Bound simultaneous provider calls across all paired devices to protect host threads and provider quotas.
 MODEL_GATE = threading.BoundedSemaphore(2)
@@ -1570,13 +1568,11 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/images/generate":
             device = self.authenticate()
             if not device: return
-            if not limited(IMAGE_LIMITS, device["id"], 3, 60):
-                self.send_json(429, {"error": "Image generation is limited to three requests per minute per device."}); return
             body = self.read_json()
             if body is None: return
             prompt = body.get("prompt")
-            if not isinstance(prompt, str) or not 3 <= len(prompt.strip()) <= 1000:
-                self.send_json(400, {"error": "Image prompts must contain 3–1000 characters."}); return
+            if not isinstance(prompt, str) or len(prompt.strip()) < 3:
+                self.send_json(400, {"error": "Image prompts must contain at least 3 characters."}); return
             prompt = prompt.strip()
             try:
                 image_bytes, mime_type, extension = request_generated_image(prompt)
@@ -1591,10 +1587,6 @@ class Handler(SimpleHTTPRequestHandler):
                 else:
                     message = "Image generation failed. Check provider availability and try again."
                 self.send_json(status, {"error": message, "detail": type(error).__name__}); return
-            with database() as con:
-                total = con.execute("SELECT COALESCE(SUM(size_bytes),0) AS total FROM generated_images").fetchone()["total"]
-                if total + len(image_bytes) > MAX_GENERATED_IMAGE_STORAGE_BYTES:
-                    self.send_json(507, {"error": "Generated-image storage reached its 200 MB limit. Remove old generated images before trying again."}); return
             image_dir = DATA_DIR / "generated-images"
             image_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             try: os.chmod(image_dir, 0o700)

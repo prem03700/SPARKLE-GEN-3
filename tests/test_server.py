@@ -989,10 +989,12 @@ class PrivateServerTests(unittest.TestCase):
         _, paired = self.request("/api/pair", "POST", {"code": setup["code"], "name": "image test"})
         status, invalid = self.request("/api/images/generate", "POST", {"prompt": "x"}, paired["token"])
         self.assertEqual(status, 400)
-        self.assertIn("3–1000", invalid["error"])
+        self.assertIn("at least 3", invalid["error"])
         fixture = b"\x89PNG\r\n\x1a\nprivate-image-fixture"
-        with patch("server.request_generated_image", return_value=(fixture, "image/png", ".png")):
-            status, result = self.request("/api/images/generate", "POST", {"prompt": "a red robot"}, paired["token"])
+        long_prompt = "a red robot " * 150
+        with patch("server.request_generated_image", return_value=(fixture, "image/png", ".png")) as generator:
+            status, result = self.request("/api/images/generate", "POST", {"prompt": long_prompt}, paired["token"])
+            generator.assert_called_once_with(long_prompt.strip())
         self.assertEqual(status, 201)
         self.assertRegex(result["id"], r"^[0-9a-f]{32}$")
         self.assertEqual(result["mime_type"], "image/png")
