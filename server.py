@@ -100,6 +100,7 @@ def is_loopback_host(host):
 if not is_loopback_host(HOST) and not TLS_ENABLED:
     raise RuntimeError("Refusing non-loopback binding without TLS. Configure SPARKLE_TLS_CERT and SPARKLE_TLS_KEY.")
 MAX_BODY = 2_000_000
+MAX_CHAT_ATTACHMENT_BYTES = 25 * 1024 * 1024
 PAIR_TTL = 600
 PAIR_CODE = secrets.token_urlsafe(8)
 PAIR_CREATED = time.time()
@@ -1160,6 +1161,10 @@ def initialize():
           id TEXT PRIMARY KEY, mime_type TEXT NOT NULL, size_bytes INTEGER NOT NULL,
           file_name TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL)""")
         con.execute("CREATE INDEX IF NOT EXISTS idx_generated_images_created ON generated_images(created_at DESC)")
+        con.execute("""CREATE TABLE IF NOT EXISTS chat_attachments(
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, content TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+          created_by TEXT NOT NULL, created_at TEXT NOT NULL)""")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_chat_attachments_owner ON chat_attachments(created_by, created_at DESC)")
         con.execute("""CREATE TABLE IF NOT EXISTS knowledge_embeddings(
           note_id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, embedding_json TEXT NOT NULL,
           updated_at TEXT NOT NULL)""")
@@ -1685,6 +1690,39 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(503, {"error": "The private Knowledge index is temporarily unavailable."}); return
             self.send_json(200, found)
             return
+        if path == "/api/chat/attachments":
+            device = self.authenticate()
+            if not device: return
+            if not limited(CHAT_LIMITS, device["id"], 20, 60):
+                self.send_json(429, {"error": "Attachment uploads are rate limited. Please wait before trying again."}); return
+            raw_size = self.headers.get("Content-Length", "")
+            try: size = int(raw_size)
+            except ValueError: self.send_json(411, {"error": "Content-Length is required for attachment uploads."}); return
+            if size < 1 or size > MAX_CHAT_ATTACHMENT_BYTES:
+                self.close_connection = True
+                self.send_json(413, {"error": "Chat attachments must be between 1 byte and 25 MB."}); return
+            if self.headers.get("Transfer-Encoding"):
+                self.close_connection = True
+                self.send_json(400, {"error": "Transfer-encoded uploads are not supported."}); return
+            name = Path(unquote(self.headers.get("X-Attachment-Name", "attachment.txt"))).name[:160]
+            if not re.fullmatch(r"[A-Za-z0-9_. -]{1,160}", name) or Path(name).suffix.lower() not in {".txt", ".md", ".csv", ".json", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".yaml", ".yml", ".toml", ".log", ".xml", ".sql", ".sh", ".c", ".h", ".cpp", ".hpp", ".java", ".rs", ".go"}:
+                self.send_json(400, {"error": "Choose a supported text or source-code file."}); return
+            try:
+                raw = self.rfile.read(size)
+                if len(raw) != size: raise ValueError("Incomplete upload.")
+                content = raw.decode("utf-8-sig")
+                if not content.strip() or "\0" in content: raise ValueError("File must contain readable UTF-8 text, not binary data.")
+            except (UnicodeDecodeError, ValueError) as error:
+                self.send_json(400, {"error": str(error)[:200]}); return
+            attachment_id = secrets.token_hex(16)
+            with database() as con:
+                total = con.execute("SELECT COALESCE(SUM(size_bytes),0) AS total FROM chat_attachments WHERE created_by=?", (device["id"],)).fetchone()["total"]
+                if total + size > 100 * 1024 * 1024:
+                    self.send_json(413, {"error": "This device has reached its 100 MB attachment storage quota. Remove old conversations or contact the host owner."}); return
+                con.execute("INSERT INTO chat_attachments(id,name,content,size_bytes,created_by,created_at) VALUES(?,?,?,?,?,?)", (attachment_id, name, content, size, device["id"], now_iso()))
+                write_audit(con, "chat.attachment_uploaded", device["id"], f"extension={Path(name).suffix.lower()}; bytes={size}")
+            self.send_json(201, {"id": attachment_id, "name": name, "size_bytes": size})
+            return
         if path == "/api/knowledge/extract":
             device = self.authenticate()
             if not device: return
@@ -1786,6 +1824,15 @@ class Handler(SimpleHTTPRequestHandler):
                 text = item.get("content", "")
                 if not isinstance(text, str): continue
                 text = text[:12000]
+                attachment_id = item.get("attachment_id")
+                if attachment_id is not None:
+                    if not isinstance(attachment_id, str) or not re.fullmatch(r"[0-9a-f]{32}", attachment_id):
+                        self.send_json(400, {"error": "Attachment reference is invalid."}); return
+                    with database() as con:
+                        attachment = con.execute("SELECT name,content FROM chat_attachments WHERE id=?", (attachment_id,)).fetchone()
+                    if not attachment:
+                        self.send_json(404, {"error": "The attached file is missing or no longer available."}); return
+                    text += "\n\n[Attached text file: " + attachment["name"] + "]\n" + attachment["content"][:2_000_000] + ("\n[Note: attachment content was truncated to the first 2 million characters for this AI request.]" if len(attachment["content"]) > 2_000_000 else "")
                 if text.strip(): cleaned.append({"role": item["role"], "content": text})
             if not cleaned or cleaned[-1]["role"] != "user":
                 self.send_json(400, {"error": "The last message must be from you."}); return

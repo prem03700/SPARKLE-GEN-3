@@ -65,6 +65,40 @@ class PrivateServerTests(unittest.TestCase):
         self.assertEqual(render[render.index("-r") + 1], "150", "OCR rendering must use bounded resolution")
         self.assertTrue(any(command[0].endswith("/tesseract") for command, _ in calls))
 
+    def test_chat_attachment_upload_is_authenticated_bounded_and_stored_separately(self):
+        self.assertEqual(self.request("/api/chat/attachments", "POST")[0], 401)
+        _, setup = self.request("/api/setup-code", "POST", {})
+        status, paired = self.request("/api/pair", "POST", {
+            "code": setup["code"], "name": "chat attachment test"
+        })
+        self.assertEqual(status, 201)
+        token = paired["token"]
+        from urllib.request import Request, urlopen
+        payload = b"print('large upload endpoint test')\n"
+        request = Request(self.base + "/api/chat/attachments", data=payload, method="POST", headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/octet-stream",
+            "X-Attachment-Name": "robot.py",
+        })
+        with urlopen(request, timeout=4) as response:
+            self.assertEqual(response.status, 201)
+            result = json.loads(response.read())
+        self.assertRegex(result["id"], r"^[0-9a-f]{32}$")
+        self.assertEqual(result["name"], "robot.py")
+        with server.database() as con:
+            row = con.execute("SELECT content,size_bytes,created_by FROM chat_attachments WHERE id=?", (result["id"],)).fetchone()
+        self.assertEqual(row["content"], payload.decode())
+        self.assertEqual(row["size_bytes"], len(payload))
+        self.assertTrue(row["created_by"])
+        bad = Request(self.base + "/api/chat/attachments", data=b"\x00\x01", method="POST", headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/octet-stream",
+            "X-Attachment-Name": "robot.py",
+        })
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(bad, timeout=4)
+        self.assertEqual(caught.exception.code, 400)
+
     def test_document_extraction_endpoint_requires_pairing_and_validates_payload(self):
         self.assertEqual(self.request("/api/knowledge/extract", "POST",
                                       {"filename": "notes.docx", "content_base64": "UEsDBA=="})[0], 401)

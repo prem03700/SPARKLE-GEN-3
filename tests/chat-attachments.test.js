@@ -12,12 +12,12 @@ test("chat attachment accepts small supported text and source files", () => {
 
 test("chat attachment rejects unsupported, oversized, empty, binary, and long files", () => {
   assert.equal(validateChatAttachment(file("photo.png"), "text").ok, false);
-  assert.equal(validateChatAttachment(file("max.txt", 1024 * 1024), "text").ok, true);
-  assert.match(validateChatAttachment(file("large.txt", 1024 * 1024 + 1), "text").error, /1 MB/);
+  assert.equal(validateChatAttachment(file("max.txt", 25 * 1024 * 1024), "text").ok, true);
+  assert.match(validateChatAttachment(file("large.txt", 25 * 1024 * 1024 + 1), "text").error, /25 MB/);
   assert.match(validateChatAttachment(file("empty.txt"), "  ").error, /empty/);
   assert.match(validateChatAttachment(file("binary.txt"), "a\0b").error, /Binary/);
   assert.equal(validateChatAttachment(file("max-chars.txt"), "x".repeat(100000)).ok, true);
-  assert.match(validateChatAttachment(file("long.txt"), "x".repeat(100001)).error, /100,000/);
+  assert.match(validateChatAttachment(file("long.txt"), "x".repeat(2_000_001)).error, /2 million characters/);
 });
 
 test("chat prompt includes attachment content while ordinary messages remain unchanged", () => {
