@@ -887,6 +887,21 @@ try {
   assert.equal(mobileComposerUsable,true,"mobile chat should keep the composer visible while long history scrolls inside the conversation pane; metrics="+await evaluate('(()=>{const input=document.querySelector("#chatInput"),conversation=document.querySelector("#conversation"),layout=document.querySelector(".chat-layout"),row=document.querySelector(".chat-workspace-row"),primary=document.querySelector(".chat-primary-column"),composer=document.querySelector(".composer-wrap");return JSON.stringify({viewport:window.innerHeight,inputBottom:input?.getBoundingClientRect().bottom,conversationScroll:conversation?.scrollHeight,conversationClient:conversation?.clientHeight,layout:layout?.getBoundingClientRect().toJSON(),row:row?.getBoundingClientRect().toJSON(),primary:primary?.getBoundingClientRect().toJSON(),composer:composer?.getBoundingClientRect().toJSON()});})()'));
   await cdp("Emulation.clearDeviceMetricsOverride",{});
 
+  // Restart the isolated server process against the same SQLite directory and
+  // verify the selected long conversation survives a genuine backend restart.
+  await new Promise(resolve=>{if(serverHandle.exitCode!==null){resolve();return;}serverHandle.once("exit",resolve);serverHandle.kill("SIGTERM");});
+  serverHandle=spawn("python3",["server.py"],{cwd:serverRoot,env:{...process.env,SPARKLE_HOST:"127.0.0.1",SPARKLE_PORT:String(appPort),SPARKLE_MODEL_PROVIDER:"ollama",SPARKLE_MODEL:"qwen3:8b"},stdio:"ignore"});
+  let restartedServerReady=false;
+  for(let i=0;i<100;i++){try{const response=await fetch(baseURL+"/api/health");if(response.ok){restartedServerReady=true;break;}}catch{}await delay(100);}
+  assert.equal(restartedServerReady,true,"private server should restart against the existing workspace database");
+  await cdp("Page.reload",{ignoreCache:true});
+  let restartReloadReady=false;
+  for(let i=0;i<100;i++){restartReloadReady=await evaluate('document.readyState === "complete" && !!document.querySelector("#conversationHistorySearch")');if(restartReloadReady)break;await delay(100);}
+  assert.equal(restartReloadReady,true,"paired browser should reconnect after the server restart");
+  await evaluate('document.querySelector("[data-view=chat]").click()');
+  const selectedConversationSurvivedRestart=await evaluate('document.querySelector("#conversation")?.innerText.includes("Old history prompt 00")===true');
+  assert.equal(selectedConversationSurvivedRestart,true,"selected conversation and its long message history should survive server restart");
+
   // Exercise the actual attachment input and upload flow without sending it to an AI provider.
   const attachmentFixturePath=join(profile,"chat-attachment-fixture.py");
   writeFileSync(attachmentFixturePath,"print('attachment upload fixture')\\n");
