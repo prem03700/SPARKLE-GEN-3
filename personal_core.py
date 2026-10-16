@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from datetime import date
 from typing import Any, Callable
 
 
@@ -32,6 +33,50 @@ def normalize_workspace_payload(
         raise WorkspaceValidationError("Preferences schema is invalid.")
 
     merged = {name: data.get(name, []) for name in default_data}
+    # Copy task records before normalization so the caller's payload is untouched.
+    merged["tasks"] = [dict(task) if isinstance(task, dict) else task for task in merged.get("tasks", [])]
+    # Tasks remain records in the existing authoritative workspace snapshot.
+    # Validate new structured fields while tolerating older minimal records.
+    task_ids: set[str] = set()
+    for task in merged.get("tasks", []):
+        if not isinstance(task, dict):
+            raise WorkspaceValidationError("Each task must be an object.")
+        identifier = task.get("id")
+        if identifier is not None:
+            if not isinstance(identifier, str) or not identifier.strip() or len(identifier) > 100:
+                raise WorkspaceValidationError("Each task needs a valid ID.")
+            if identifier in task_ids:
+                raise WorkspaceValidationError("Task IDs must be unique.")
+            task_ids.add(identifier)
+        if "title" in task and (not isinstance(task["title"], str) or not task["title"].strip() or len(task["title"]) > 160):
+            raise WorkspaceValidationError("Task title must contain 1–160 characters.")
+        for field, limit in (("details", 2000), ("description", 2000)):
+            if field in task and (not isinstance(task[field], str) or len(task[field]) > limit):
+                raise WorkspaceValidationError(f"Task {field} must be text no longer than {limit} characters.")
+        if "done" in task and not isinstance(task["done"], bool):
+            raise WorkspaceValidationError("Task done flag must be boolean.")
+        if "status" in task and (not isinstance(task["status"], str) or task["status"] not in {"open", "in-progress", "completed", "cancelled"}):
+            raise WorkspaceValidationError("Task status is invalid.")
+        if "priority" in task and (not isinstance(task["priority"], str) or task["priority"] not in {"low", "medium", "high", "urgent"}):
+            raise WorkspaceValidationError("Task priority is invalid.")
+        due_date = task.get("dueDate", "")
+        if due_date:
+            if not isinstance(due_date, str) or len(due_date) != 10:
+                raise WorkspaceValidationError("Task due date must use YYYY-MM-DD.")
+            try:
+                if date.fromisoformat(due_date).isoformat() != due_date:
+                    raise ValueError("non-canonical date")
+            except ValueError as exc:
+                raise WorkspaceValidationError("Task due date must be a valid YYYY-MM-DD calendar date.") from exc
+        tags = task.get("tags", [])
+        if isinstance(tags, str):
+            tags = [part.strip() for part in tags.split(",") if part.strip()]
+            task["tags"] = tags
+        if not isinstance(tags, list) or len(tags) > 12 or any(not isinstance(tag, str) or not tag.strip() or len(tag) > 40 for tag in tags):
+            raise WorkspaceValidationError("Task tags must contain at most 12 labels of up to 40 characters.")
+        for field in ("goalId", "projectId"):
+            if field in task and (not isinstance(task[field], str) or len(task[field]) > 100):
+                raise WorkspaceValidationError(f"Task {field} must be a short record ID.")
     # Reusable skills are bounded instruction definitions, never executable
     # code or permission grants. Validate at the authoritative server boundary.
     skills = merged.get("skills", [])
