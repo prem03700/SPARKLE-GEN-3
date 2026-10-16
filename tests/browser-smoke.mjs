@@ -912,6 +912,10 @@ try {
   let attachmentUploaded=false;
   for(let i=0;i<60;i++){attachmentUploaded=await evaluate('document.querySelector(".attachment-chip")?.innerText.includes("chat-attachment-fixture.py")===true');if(attachmentUploaded)break;await delay(50);}
   assert.equal(attachmentUploaded,true,"supported chat files should upload and appear as a separate attachment chip");
+  const attachmentWorkspaceResponse=await fetch(`${baseURL}/api/data`,{headers:{Authorization:`Bearer ${token}`}});
+  const attachmentWorkspace=await attachmentWorkspaceResponse.json();
+  assert.equal(attachmentWorkspace.data.knowledge?.some(item=>item.title==="chat-attachment-fixture.py"),false,"chat attachment upload must not silently import the file into Knowledge");
+  assert.equal(attachmentWorkspace.data.conversations?.some(item=>(item.chat||[]).some(message=>message.attachmentName==="chat-attachment-fixture.py")),false,"an attachment should not enter chat history until the user submits the composed message");
   await evaluate('document.querySelector("[data-action=remove-chat-attachment]").click()');
   const unsupportedFixturePath=join(profile,"unsupported-attachment.exe");
   writeFileSync(unsupportedFixturePath,"not an executable");
