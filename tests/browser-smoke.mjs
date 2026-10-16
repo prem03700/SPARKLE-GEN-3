@@ -792,7 +792,7 @@ try {
 
   // Conversation history supports durable custom titles, content search, and archive round-trips.
   await evaluate('document.querySelector("#historyList [data-action=rename-conversation]")?.click()');
-  const renameDialogOpened = await evaluate('document.querySelector("#appDialog")?.open === true && document.querySelector("#appDialogField0") !== null');
+  const renameDialogOpened = await evaluate('document.querySelector("#appDialog")?.open === true && document.querySelector("#appDialogTitle")?.textContent === "Rename conversation" && document.querySelector("#appDialogField0") !== null');
   assert.equal(renameDialogOpened, true, "history should expose an in-app rename action");
   await evaluate('document.querySelector("#appDialogField0").value = "Persistent renamed smoke conversation"; document.querySelector("#appDialogSubmit").click()');
   let renamed = false;
@@ -839,7 +839,7 @@ try {
 
   // Verify conversations older than the former eight-item cutoff remain searchable,
   // and that opening one restores the selected conversation after a reload.
-  const historyFixtures = Array.from({length:60},(_,i)=>({id:"history-fixture-"+String(i).padStart(2,"0"),title:"History fixture "+String(i).padStart(2,"0"),assistant:"main",updatedAt:new Date(Date.UTC(2020,0,i+1)).toISOString(),chat:[{role:"user",html:"<p>Old history prompt "+String(i).padStart(2,"0")+"</p>"},{role:"assistant",html:"<p>Old history response "+String(i).padStart(2,"0")+"</p>"}]}));
+  const historyFixtures = Array.from({length:60},(_,i)=>({id:"history-fixture-"+String(i).padStart(2,"0"),title:"History fixture "+String(i).padStart(2,"0"),assistant:"main",updatedAt:new Date(Date.UTC(2020,0,i+1)).toISOString(),chat:i===0?Array.from({length:100},(_,j)=>({role:j%2===0?"user":"assistant",html:"<p>"+(j===0?"Old history prompt 00":"History fixture 00 message "+String(j).padStart(3,"0"))+(j%2===0?"":" · response")+"</p>"})):[{role:"user",html:"<p>Old history prompt "+String(i).padStart(2,"0")+"</p>"},{role:"assistant",html:"<p>Old history response "+String(i).padStart(2,"0")+"</p>"}]}));
   let historySeed;
   for(let attempt=0;attempt<5;attempt++){
     const historyResponse=await fetch(`${baseURL}/api/data`,{headers:{Authorization:`Bearer ${token}`}});
@@ -870,6 +870,10 @@ try {
   let oldestConversationOpened=false;
   for(let i=0;i<30;i++){oldestConversationOpened=await evaluate('document.querySelector("#conversation")?.innerText.includes("Old history prompt 00")===true');if(oldestConversationOpened)break;await delay(50);}
   assert.equal(oldestConversationOpened,true,"opening an older search result should restore its saved messages");
+  const longConversationCount=await evaluate('document.querySelectorAll("#conversation .message").length');
+  assert.ok(longConversationCount>=100,"long conversations should render their full saved message history");
+  const longConversationScroll=await evaluate('(()=>{const el=document.querySelector("#conversation");el.scrollTop=el.scrollHeight;return el.scrollHeight>el.clientHeight&&el.scrollTop+el.clientHeight>=el.scrollHeight-2;})()');
+  assert.equal(longConversationScroll,true,"long conversation scrolling should reach the newest message");
   await cdp("Page.reload", { ignoreCache:true });
   let selectedConversationReloaded=false;
   for(let i=0;i<100;i++){selectedConversationReloaded=await evaluate('document.readyState === "complete" && !!document.querySelector("[data-view=chat]")');if(selectedConversationReloaded)break;await delay(100);}
@@ -877,6 +881,31 @@ try {
   await evaluate('document.querySelector("[data-view=chat]").click()');
   const selectedConversationRestored=await evaluate('document.querySelector("#conversation")?.innerText.includes("Old history prompt 00")===true');
   assert.equal(selectedConversationRestored,true,"the selected conversation should survive a refresh");
+  await cdp("Emulation.setDeviceMetricsOverride",{width:390,height:844,deviceScaleFactor:1,mobile:true});
+  await evaluate('document.querySelector("[data-view=chat]").click()');
+  const mobileComposerUsable=await evaluate('(()=>{const input=document.querySelector("#chatInput"),conversation=document.querySelector("#conversation");return !!input&&input.getBoundingClientRect().width>0&&input.getBoundingClientRect().bottom<=window.innerHeight&&!!conversation&&conversation.scrollHeight>conversation.clientHeight;})()');
+  assert.equal(mobileComposerUsable,true,"mobile chat should keep the composer visible while long history scrolls inside the conversation pane; metrics="+await evaluate('(()=>{const input=document.querySelector("#chatInput"),conversation=document.querySelector("#conversation"),layout=document.querySelector(".chat-layout"),row=document.querySelector(".chat-workspace-row"),primary=document.querySelector(".chat-primary-column"),composer=document.querySelector(".composer-wrap");return JSON.stringify({viewport:window.innerHeight,inputBottom:input?.getBoundingClientRect().bottom,conversationScroll:conversation?.scrollHeight,conversationClient:conversation?.clientHeight,layout:layout?.getBoundingClientRect().toJSON(),row:row?.getBoundingClientRect().toJSON(),primary:primary?.getBoundingClientRect().toJSON(),composer:composer?.getBoundingClientRect().toJSON()});})()'));
+  await cdp("Emulation.clearDeviceMetricsOverride",{});
+
+  // Exercise the actual attachment input and upload flow without sending it to an AI provider.
+  const attachmentFixturePath=join(profile,"chat-attachment-fixture.py");
+  writeFileSync(attachmentFixturePath,"print('attachment upload fixture')\\n");
+  let attachmentDocument=await cdp("DOM.getDocument",{depth:-1});
+  let attachmentInput=await cdp("DOM.querySelector",{nodeId:attachmentDocument.root.nodeId,selector:"#chatAttachment"});
+  await cdp("DOM.setFileInputFiles",{nodeId:attachmentInput.nodeId,files:[attachmentFixturePath]});
+  await evaluate('document.querySelector("#chatAttachment").dispatchEvent(new Event("change",{bubbles:true}))');
+  let attachmentUploaded=false;
+  for(let i=0;i<60;i++){attachmentUploaded=await evaluate('document.querySelector(".attachment-chip")?.innerText.includes("chat-attachment-fixture.py")===true');if(attachmentUploaded)break;await delay(50);}
+  assert.equal(attachmentUploaded,true,"supported chat files should upload and appear as a separate attachment chip");
+  await evaluate('document.querySelector("[data-action=remove-chat-attachment]").click()');
+  const unsupportedFixturePath=join(profile,"unsupported-attachment.exe");
+  writeFileSync(unsupportedFixturePath,"not an executable");
+  attachmentDocument=await cdp("DOM.getDocument",{depth:-1});
+  attachmentInput=await cdp("DOM.querySelector",{nodeId:attachmentDocument.root.nodeId,selector:"#chatAttachment"});
+  await cdp("DOM.setFileInputFiles",{nodeId:attachmentInput.nodeId,files:[unsupportedFixturePath]});
+  await evaluate('document.querySelector("#chatAttachment").dispatchEvent(new Event("change",{bubbles:true}))');
+  const unsupportedAttachmentRejected=await evaluate('document.body.innerText.includes("Choose PDF, Word, Excel, PowerPoint") && !document.querySelector(".attachment-chip")');
+  assert.equal(unsupportedAttachmentRejected,true,"unsupported attachments should be rejected in the UI without becoming attached");
 
   // Exercise the stop-response affordance with a controllable in-page fetch that
   // honors AbortSignal; no provider request is sent by this test.
