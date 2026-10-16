@@ -856,6 +856,8 @@ try {
   for(let i=0;i<100;i++){historyReloadReady=await evaluate('document.readyState === "complete" && !!document.querySelector("#conversationHistorySearch")');if(historyReloadReady)break;await delay(100);}
   assert.equal(historyReloadReady,true,"conversation history controls should be available after reload");
   await evaluate('document.querySelector("[data-view=chat]").click()');
+  const customTitleAfterReload=await evaluate('document.querySelector("#historyList")?.innerText.includes("Persistent renamed smoke conversation")===true');
+  assert.equal(customTitleAfterReload,true,"custom conversation titles should survive a full browser reload");
   const historyPageSize=await evaluate('document.querySelectorAll("#historyList .history-row").length');
   assert.equal(historyPageSize,50,"history should render a bounded first page for large conversation libraries");
   const loadOlderVisible=await evaluate('!!document.querySelector("#historyList [data-action=load-more-conversations]")');
