@@ -96,4 +96,10 @@ test("conversation navigation and destructive history actions are blocked during
   assert.match(source, /case "delete-conversation":\{if\(activeChatRequest\)/);
   assert.match(source, /case "clear-history":\{if\(activeChatRequest\)/);
   assert.match(source, /\$\("#newChat"\)\.addEventListener\("click",\(\)=>\{if\(activeChatRequest\)/);
+  assert.match(source, /case "rename-conversation"/);
+  assert.match(source, /case "toggle-archive-conversation"/);
+  assert.match(source, /e\.target\.id==="conversationHistorySearch"/);
+  assert.match(source, /function renderHistory\(\).*\.filter\(c=>Boolean\(c\.archived\)===showArchivedConversations\).*\.sort\(/);
+  assert.doesNotMatch(source, /state\.conversations\.slice\(-8\)/, "history should not truncate access to the latest eight conversations");
+  assert.match(source, /title:found\?\.titleCustom\?found\.title:generatedTitle/);
 });

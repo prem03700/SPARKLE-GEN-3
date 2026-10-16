@@ -25,10 +25,21 @@
 :root[data-density="spacious"] .nav-item{min-height:44px;padding-top:12px;padding-bottom:12px}
 :root[data-density="spacious"] .list-row{padding-top:15px;padding-bottom:15px}
 .history-clear{min-height:32px}
+.conversation-history-controls{display:flex;gap:5px;align-items:center;margin:5px 0 7px}
+#conversationHistorySearch{min-width:0;width:100%;flex:1;background:var(--surface);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:7px 8px;font-size:11px}
+.history-filter{flex:none;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);font-size:10px;padding:7px 8px}
+.history-filter[aria-pressed="true"]{background:var(--accent-soft);color:var(--text);border-color:var(--accent)}
+.history-list{max-height:min(42vh,440px);overflow-y:auto;overscroll-behavior:contain;align-content:start;scrollbar-gutter:stable}
+.history-manage{width:24px;height:28px;flex:none;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:13px;opacity:.7;padding:0}
+.history-manage:hover,.history-manage:focus-visible{opacity:1;background:var(--surface);color:var(--text)}
+.history-empty{white-space:normal;line-height:1.5;padding:8px 10px}
+.sidebar-collapsed .conversation-history-controls{display:none}
 .tab-button{min-height:40px}
 .rd-telemetry small{font-size:10px}
 .rd-sim-config input[type="range"]{min-height:32px;cursor:pointer;touch-action:pan-y}
 @media(max-width:680px){
+  .history-manage,.history-delete{min-width:32px;min-height:36px}
+  .conversation-history-controls{gap:4px}
   .breadcrumbs{min-width:0;flex:1;white-space:nowrap;overflow:hidden;gap:6px}
   #breadcrumbWorkspace,.crumb-sep{display:none}
   #breadcrumbPage{flex:1;max-width:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

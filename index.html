@@ -26,7 +26,8 @@
         <button class="nav-item" data-view="projects" data-assistant="projects"><span class="nav-icon">▦</span><span class="nav-text">Projects</span></button>
         <button class="nav-item" data-view="lab" data-assistant="rd"><span class="nav-icon">⚗</span><span class="nav-text">R&D lab</span></button>
       </nav>
-      <div class="history-heading"><div class="nav-label history-label">RECENT</div><button class="history-clear" data-action="clear-history" title="Clear conversation history" aria-label="Clear conversation history">Clear</button></div>
+      <div class="history-heading"><div class="nav-label history-label">CONVERSATIONS</div><button class="history-clear" data-action="clear-history" title="Clear conversation history" aria-label="Clear conversation history">Clear</button></div>
+      <div class="conversation-history-controls"><input id="conversationHistorySearch" type="search" placeholder="Search chat history…" aria-label="Search conversation history" autocomplete="off"><button type="button" class="history-filter" data-action="toggle-archived-conversations" aria-pressed="false">Archived</button></div>
       <div class="history-list" id="historyList">
         <div class="history-item" style="opacity:.6">Loading recent conversations…</div>
       </div>

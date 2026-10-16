@@ -789,6 +789,52 @@ try {
     await delay(50);
   }
   assert.equal(editCompleted, true, "editing a sent user turn should resubmit the edited turn and finalize its response");
+
+  // Conversation history supports durable custom titles, content search, and archive round-trips.
+  await evaluate('document.querySelector("#historyList [data-action=rename-conversation]")?.click()');
+  const renameDialogOpened = await evaluate('document.querySelector("#appDialog")?.open === true && document.querySelector("#appDialogField0") !== null');
+  assert.equal(renameDialogOpened, true, "history should expose an in-app rename action");
+  await evaluate('document.querySelector("#appDialogField0").value = "Persistent renamed smoke conversation"; document.querySelector("#appDialogForm").requestSubmit()');
+  let renamed = false;
+  for (let i = 0; i < 30; i++) {
+    renamed = await evaluate('document.querySelector("#historyList")?.innerText.includes("Persistent renamed smoke conversation") === true');
+    if (renamed) break;
+    await delay(50);
+  }
+  assert.equal(renamed, true, "renaming should update the visible history title; history=" + await evaluate('document.querySelector("#historyList")?.innerText') + "; saved=" + await evaluate('JSON.stringify((JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").conversations||[]).map(c=>({id:c.id,title:c.title,titleCustom:c.titleCustom})))'));
+  const titlePersisted = await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").conversations?.some(c=>c.title==="Persistent renamed smoke conversation"&&c.titleCustom===true)===true');
+  assert.equal(titlePersisted, true, "custom title and its lock flag should persist locally");
+  await evaluate('document.querySelector("#chatInput").value = "Follow-up to preserve custom title"; document.querySelector("#chatForm").requestSubmit()');
+  let customTitlePreserved = false;
+  for (let i = 0; i < 50; i++) {
+    customTitlePreserved = await evaluate('document.body.innerText.includes("Mock follow-up response 3") && document.querySelector("#historyList")?.innerText.includes("Persistent renamed smoke conversation") === true && !document.querySelector("[data-action=cancel-response]")');
+    if (customTitlePreserved) break;
+    await delay(50);
+  }
+  assert.equal(customTitlePreserved, true, "sending a later message must not overwrite a custom conversation title");
+  await evaluate('(()=>{const q = document.querySelector("#conversationHistorySearch"); q.value = "Edited smoke user turn"; q.dispatchEvent(new Event("input", {bubbles:true}));})()');
+  const contentSearchWorks = await evaluate('document.querySelector("#historyList")?.innerText.includes("Persistent renamed smoke conversation") === true');
+  assert.equal(contentSearchWorks, true, "conversation history search should match older message content, not just titles");
+  await evaluate('(()=>{const q = document.querySelector("#conversationHistorySearch"); q.value = ""; q.dispatchEvent(new Event("input", {bubbles:true})); document.querySelector("#historyList [data-action=toggle-archive-conversation]")?.click();})()');
+  const archivedHidden = await evaluate('!document.querySelector("#historyList")?.innerText.includes("Persistent renamed smoke conversation")');
+  assert.equal(archivedHidden, true, "archived conversations should leave the active history list");
+  const archivePersisted = await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").conversations?.some(c=>c.title==="Persistent renamed smoke conversation"&&c.archived===true)===true');
+  assert.equal(archivePersisted, true, "archive state should persist with the conversation record");
+  let managedConversationSynced = false;
+  for (let i = 0; i < 30; i++) {
+    const managedResponse = await fetch(`${baseURL}/api/data`, { headers: { Authorization: `Bearer ${token}` } });
+    const managedData = await managedResponse.json();
+    managedConversationSynced = managedData.data?.conversations?.some(c=>c.title==="Persistent renamed smoke conversation"&&c.titleCustom===true&&c.archived===true)===true;
+    if (managedConversationSynced) break;
+    await delay(100);
+  }
+  assert.equal(managedConversationSynced, true, "renamed and archived conversation metadata should sync to the private server");
+  await evaluate('document.querySelector("[data-action=toggle-archived-conversations]").click()');
+  const archivedVisible = await evaluate('document.querySelector("#historyList")?.innerText.includes("Persistent renamed smoke conversation") === true && document.querySelector("[data-action=toggle-archive-conversation]") !== null');
+  assert.equal(archivedVisible, true, "archived conversations should remain discoverable and offer unarchive");
+  await evaluate('document.querySelector("#historyList [data-action=toggle-archive-conversation]")?.click(); document.querySelector("[data-action=toggle-archived-conversations]").click()');
+  const unarchivedVisible = await evaluate('document.querySelector("#historyList")?.innerText.includes("Persistent renamed smoke conversation") === true');
+  assert.equal(unarchivedVisible, true, "unarchiving should restore a conversation to active history");
   await evaluate('window.fetch = window.__sparkleOriginalFetch; delete window.__sparkleOriginalFetch; delete window.__editRetryCount');
 
   // Exercise the stop-response affordance with a controllable in-page fetch that
