@@ -802,6 +802,10 @@ try {
     await delay(100);
   }
   assert.equal(stopButtonVisible, true, "pending assistant response should offer a Stop response action");
+  // While a request is active, navigation and New conversation must not detach
+  // the pending response from its originating conversation.
+  const isolationHeld = await evaluate('(()=>{ const before = document.querySelector("#conversation")?.innerText || ""; document.querySelector("#newChat").click(); document.querySelector("[data-view=settings]").click(); const after = document.querySelector("#conversation")?.innerText || ""; return before === after && !!document.querySelector("[data-action=cancel-response]") && !!document.querySelector("#conversation"); })()');
+  assert.equal(isolationHeld, true, "New conversation and workspace navigation must leave an active response in its originating chat");
   await evaluate('document.querySelector("[data-action=cancel-response]").click()');
   let cancelled = false;
   for (let i = 0; i < 50; i++) {
