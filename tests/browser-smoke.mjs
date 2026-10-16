@@ -858,6 +858,8 @@ try {
   await evaluate('document.querySelector("[data-view=chat]").click()');
   const customTitleAfterReload=await evaluate('document.querySelector("#historyList")?.innerText.includes("Persistent renamed smoke conversation")===true');
   assert.equal(customTitleAfterReload,true,"custom conversation titles should survive a full browser reload");
+  const historyOrderingCorrect=await evaluate('document.querySelector("#historyList .history-row")?.innerText.includes("Persistent renamed smoke conversation")===true');
+  assert.equal(historyOrderingCorrect,true,"history should sort by most recent conversation update before older records");
   const historyPageSize=await evaluate('document.querySelectorAll("#historyList .history-row").length');
   assert.equal(historyPageSize,50,"history should render a bounded first page for large conversation libraries");
   const loadOlderVisible=await evaluate('!!document.querySelector("#historyList [data-action=load-more-conversations]")');
