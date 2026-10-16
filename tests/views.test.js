@@ -93,6 +93,26 @@ test("every workspace view renders independently from the app shell", () => {
   assert.match(auditSettings, /workspace.updated/);
 });
 
+test("Research renders saved source sessions with open/delete and export controls", () => {
+  const state=createInitialUIState("light");
+  state.researchQuery="visual SLAM";
+  state.researchSearchResults=[{title:"Paper <one>",authors:["A. Author"],year:2024,doi:"10.1234/test",url:"https://doi.org/10.1234/test"}];
+  state.researchActiveSessionId="research-session-1";
+  state.workspaceHistory=[{id:"research-session-1",workspace:"research",researchType:"crossref",provider:"Crossref",query:"visual SLAM",createdAt:"2026-10-16T00:00:00Z",results:state.researchSearchResults}];
+  const html=researchView({state,names,pageHeading,card,escapeHTML});
+  assert.match(html,/visual SLAM/);
+  assert.match(html,/Paper &lt;one&gt;/);
+  assert.match(html,/data-action="open-research-session"/);
+  assert.match(html,/data-action="delete-research-session"/);
+  assert.match(html,/data-action="export-research-report"/);
+  assert.match(html,/saved results/);
+  const appSource=readFileSync(new URL("../src/app.js",import.meta.url),"utf8");
+  assert.match(appSource,/function restoreResearchSession\(/);
+  assert.match(appSource,/case "open-research-session"/);
+  assert.match(appSource,/case "delete-research-session"/);
+  assert.match(appSource,/case "export-research-report"/);
+});
+
 test("R&D tabs have a valid initial view", () => {
   const html = labView({state:createInitialUIState("light"),names,pageHeading,card});
   assert.match(html,/Simulation/);
