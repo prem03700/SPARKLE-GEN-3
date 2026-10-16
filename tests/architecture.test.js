@@ -100,6 +100,7 @@ test("conversation navigation and destructive history actions are blocked during
   assert.match(source, /case "retry-message":\{if\(activeChatRequest\)/);
   assert.match(source, /case "rename-conversation"/);
   assert.match(source, /case "toggle-archive-conversation"/);
+  assert.match(source, /case "load-more-conversations":visibleConversationCount\+=50/);
   assert.match(source, /e\.target\.id==="conversationHistorySearch"/);
   assert.match(source, /function renderHistory\(\).*\.filter\(c=>Boolean\(c\.archived\)===showArchivedConversations\).*\.sort\(/);
   assert.doesNotMatch(source, /state\.conversations\.slice\(-8\)/, "history should not truncate access to the latest eight conversations");

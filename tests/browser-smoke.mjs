@@ -794,7 +794,7 @@ try {
   await evaluate('document.querySelector("#historyList [data-action=rename-conversation]")?.click()');
   const renameDialogOpened = await evaluate('document.querySelector("#appDialog")?.open === true && document.querySelector("#appDialogField0") !== null');
   assert.equal(renameDialogOpened, true, "history should expose an in-app rename action");
-  await evaluate('document.querySelector("#appDialogField0").value = "Persistent renamed smoke conversation"; document.querySelector("#appDialogForm").requestSubmit()');
+  await evaluate('document.querySelector("#appDialogField0").value = "Persistent renamed smoke conversation"; document.querySelector("#appDialogSubmit").click()');
   let renamed = false;
   for (let i = 0; i < 30; i++) {
     renamed = await evaluate('document.querySelector("#historyList")?.innerText.includes("Persistent renamed smoke conversation") === true');
@@ -836,6 +836,47 @@ try {
   const unarchivedVisible = await evaluate('document.querySelector("#historyList")?.innerText.includes("Persistent renamed smoke conversation") === true');
   assert.equal(unarchivedVisible, true, "unarchiving should restore a conversation to active history");
   await evaluate('window.fetch = window.__sparkleOriginalFetch; delete window.__sparkleOriginalFetch; delete window.__editRetryCount');
+
+  // Verify conversations older than the former eight-item cutoff remain searchable,
+  // and that opening one restores the selected conversation after a reload.
+  const historyFixtures = Array.from({length:60},(_,i)=>({id:"history-fixture-"+String(i).padStart(2,"0"),title:"History fixture "+String(i).padStart(2,"0"),assistant:"main",updatedAt:new Date(Date.UTC(2020,0,i+1)).toISOString(),chat:[{role:"user",html:"<p>Old history prompt "+String(i).padStart(2,"0")+"</p>"},{role:"assistant",html:"<p>Old history response "+String(i).padStart(2,"0")+"</p>"}]}));
+  let historySeed;
+  for(let attempt=0;attempt<5;attempt++){
+    const historyResponse=await fetch(`${baseURL}/api/data`,{headers:{Authorization:`Bearer ${token}`}});
+    assert.equal(historyResponse.status,200,"history fixture should load the isolated server workspace");
+    const historySnapshot=await historyResponse.json();
+    historySnapshot.data.conversations=[...(historySnapshot.data.conversations||[]).filter(c=>!String(c.id||"").startsWith("history-fixture-")),...historyFixtures];
+    historySeed=await fetch(`${baseURL}/api/data`,{method:"PUT",headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify({data:historySnapshot.data,preferences:historySnapshot.preferences,revision:historySnapshot.revision})});
+    if(historySeed.status===200||historySeed.status!==409)break;
+    await delay(100);
+  }
+  assert.equal(historySeed.status,200,"history fixtures should be persisted through the normal workspace API despite concurrent revision updates");
+  await cdp("Page.reload", { ignoreCache:true });
+  let historyReloadReady=false;
+  for(let i=0;i<100;i++){historyReloadReady=await evaluate('document.readyState === "complete" && !!document.querySelector("#conversationHistorySearch")');if(historyReloadReady)break;await delay(100);}
+  assert.equal(historyReloadReady,true,"conversation history controls should be available after reload");
+  await evaluate('document.querySelector("[data-view=chat]").click()');
+  const historyPageSize=await evaluate('document.querySelectorAll("#historyList .history-row").length');
+  assert.equal(historyPageSize,50,"history should render a bounded first page for large conversation libraries");
+  const loadOlderVisible=await evaluate('!!document.querySelector("#historyList [data-action=load-more-conversations]")');
+  assert.equal(loadOlderVisible,true,"history should offer an explicit way to load older conversations");
+  await evaluate('document.querySelector("#historyList [data-action=load-more-conversations]").click()');
+  const olderPageLoaded=await evaluate('document.querySelectorAll("#historyList .history-row").length>50');
+  assert.equal(olderPageLoaded,true,"Load older conversations should expand the visible history");
+  await evaluate('(()=>{const q=document.querySelector("#conversationHistorySearch");q.value="History fixture 00";q.dispatchEvent(new Event("input",{bubbles:true}));})()');
+  const oldestConversationSearchable=await evaluate('!!document.querySelector("#historyList [data-action=open-conversation][data-id=history-fixture-00]")');
+  assert.equal(oldestConversationSearchable,true,"history search should find conversations older than the former eight-item cutoff");
+  await evaluate('document.querySelector("#historyList [data-action=open-conversation][data-id=history-fixture-00]").click()');
+  let oldestConversationOpened=false;
+  for(let i=0;i<30;i++){oldestConversationOpened=await evaluate('document.querySelector("#conversation")?.innerText.includes("Old history prompt 00")===true');if(oldestConversationOpened)break;await delay(50);}
+  assert.equal(oldestConversationOpened,true,"opening an older search result should restore its saved messages");
+  await cdp("Page.reload", { ignoreCache:true });
+  let selectedConversationReloaded=false;
+  for(let i=0;i<100;i++){selectedConversationReloaded=await evaluate('document.readyState === "complete" && !!document.querySelector("[data-view=chat]")');if(selectedConversationReloaded)break;await delay(100);}
+  assert.equal(selectedConversationReloaded,true,"page should load after restoring an older conversation");
+  await evaluate('document.querySelector("[data-view=chat]").click()');
+  const selectedConversationRestored=await evaluate('document.querySelector("#conversation")?.innerText.includes("Old history prompt 00")===true');
+  assert.equal(selectedConversationRestored,true,"the selected conversation should survive a refresh");
 
   // Exercise the stop-response affordance with a controllable in-page fetch that
   // honors AbortSignal; no provider request is sent by this test.
