@@ -850,7 +850,7 @@ try {
   assert.equal(stopButtonVisible, true, "pending assistant response should offer a Stop response action");
   // While a request is active, navigation and New conversation must not detach
   // the pending response from its originating conversation.
-  const isolationHeld = await evaluate('(()=>{ const before = document.querySelector("#conversation")?.innerText || ""; document.querySelector("#newChat").click(); document.querySelector("[data-view=settings]").click(); const after = document.querySelector("#conversation")?.innerText || ""; return before === after && !!document.querySelector("[data-action=cancel-response]") && !!document.querySelector("#conversation"); })()');
+  const isolationHeld = await evaluate('(()=>{ const before = document.querySelector("#conversation")?.innerText || ""; document.querySelector("#newChat").click(); document.querySelector("[data-view=settings]").click(); const after = document.querySelector("#conversation")?.innerText || ""; return before === after && !!document.querySelector("[data-action=cancel-response]") && !!document.querySelector("#conversation") && !document.querySelector("[data-action=retry-message]"); })()');
   assert.equal(isolationHeld, true, "New conversation and workspace navigation must leave an active response in its originating chat");
   await evaluate('document.querySelector("[data-action=cancel-response]").click()');
   let cancelled = false;
@@ -870,6 +870,26 @@ try {
     await delay(100);
   }
   assert.equal(cancelSynced, true, "cancelled-response status should persist to the private server");
+
+  // Image generation cancellation should be represented as a stop, not a provider failure.
+  await evaluate('document.querySelector("[data-action=toggle-image-mode]").click()');
+  await evaluate(`window.__sparkleOriginalFetch = window.fetch.bind(window); window.fetch = (input, init = {}) => { const url = typeof input === "string" ? input : input.url; if (url.includes("/api/images/generate")) return new Promise((resolve, reject) => { const abort = () => reject(new DOMException("Aborted", "AbortError")); if (init.signal?.aborted) abort(); else init.signal?.addEventListener("abort", abort, { once: true }); }); return window.__sparkleOriginalFetch(input, init); }; document.querySelector("#chatInput").value = "Image cancellation smoke test"; document.querySelector("#chatForm").requestSubmit();`);
+  let imageStopVisible = false;
+  for (let i = 0; i < 50; i++) {
+    imageStopVisible = await evaluate('!!document.querySelector("[data-action=cancel-response]")');
+    if (imageStopVisible) break;
+    await delay(50);
+  }
+  assert.equal(imageStopVisible, true, "image generation should expose a stop action while pending");
+  await evaluate('document.querySelector("[data-action=cancel-response]").click()');
+  let imageCancelled = false;
+  for (let i = 0; i < 50; i++) {
+    imageCancelled = await evaluate('document.body.innerText.includes("Image generation stopped")');
+    if (imageCancelled) break;
+    await delay(50);
+  }
+  assert.equal(imageCancelled, true, "stopping image generation should not be shown as a generic provider failure");
+  await evaluate('window.fetch = window.__sparkleOriginalFetch; delete window.__sparkleOriginalFetch; document.querySelector("[data-action=toggle-image-mode]").click()');
 
   // Verify confirmed workspace clearing is synchronized to the isolated server.
   await evaluate('document.querySelector("[data-view=settings]").click(); document.querySelector("[data-action=clear-data]").click()');

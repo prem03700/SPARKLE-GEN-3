@@ -96,6 +96,8 @@ test("conversation navigation and destructive history actions are blocked during
   assert.match(source, /case "delete-conversation":\{if\(activeChatRequest\)/);
   assert.match(source, /case "clear-history":\{if\(activeChatRequest\)/);
   assert.match(source, /\$\("#newChat"\)\.addEventListener\("click",\(\)=>\{if\(activeChatRequest\)/);
+  assert.match(source, /case "edit-message":\{if\(activeChatRequest\)/);
+  assert.match(source, /case "retry-message":\{if\(activeChatRequest\)/);
   assert.match(source, /case "rename-conversation"/);
   assert.match(source, /case "toggle-archive-conversation"/);
   assert.match(source, /e\.target\.id==="conversationHistorySearch"/);
