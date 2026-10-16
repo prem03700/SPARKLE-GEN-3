@@ -214,6 +214,30 @@ try {
     const contentLength = await evaluate('document.querySelector("#viewRoot")?.innerText.trim().length || 0');
     assert.ok(contentLength > 20, `workspace ${view} should render useful content`);
   }
+  // Exercise reusable-skill CRUD, search, versioning, enable/disable, and removal in-browser.
+  await evaluate('document.querySelector("[data-view=learning]").click()');
+  assert.equal(await evaluate('!!document.querySelector("#skillName") && !!document.querySelector("#skillInstructions")'), true, "Learning & Skills should expose the reusable-skill editor");
+  await evaluate('document.querySelector("#skillName").value = "Browser Skill Fixture"; document.querySelector("#skillDescription").value = "A browser CRUD test"; document.querySelector("#skillInstructions").value = "Review the input and return concise findings."; document.querySelector("#skillInputs").value = "A sample paragraph"; document.querySelector("#skillOutputs").value = "Findings"; document.querySelector("[data-action=create-skill]").click()');
+  assert.equal(await evaluate('document.querySelector(".skill-card h3")?.textContent'), "Browser Skill Fixture", "new skill definition should render in the catalog");
+  assert.equal(await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1")).skills.length'), 1, "skill definition should persist to browser workspace storage");
+  await evaluate('document.querySelector("#skillSearch").value = "browser crud"; document.querySelector("#skillSearch").dispatchEvent(new Event("input", {bubbles:true}))');
+  assert.equal(await evaluate('document.querySelectorAll(".skill-card").length'), 1, "skill search should match descriptive metadata");
+  await evaluate('document.querySelector("#skillSearch").value = "not-a-match"; document.querySelector("#skillSearch").dispatchEvent(new Event("input", {bubbles:true}))');
+  assert.equal(await evaluate('document.querySelectorAll(".skill-card").length'), 0, "skill search should filter non-matching definitions");
+  await evaluate('document.querySelector("#skillSearch").value = ""; document.querySelector("#skillSearch").dispatchEvent(new Event("input", {bubbles:true}))');
+  await evaluate('document.querySelector("[data-action=toggle-skill]").click()');
+  assert.match(await evaluate('document.querySelector(".skill-card .card-kicker").textContent'), /Disabled/, "disabled skill should be visibly marked and not invokable");
+  await evaluate('document.querySelector("[data-action=toggle-skill]").click()');
+  await evaluate('document.querySelector("[data-action=edit-skill]").click()');
+  assert.equal(await evaluate('document.querySelector("#appDialog").open'), true, "editing a skill should use the integrated application dialog");
+  await evaluate('document.querySelector("#appDialogField0").value = "Browser Skill Fixture v2"; document.querySelector("#appDialogSubmit").click()');
+  assert.equal(await evaluate('document.querySelector(".skill-card h3")?.textContent'), "Browser Skill Fixture v2", "skill editing should update the definition");
+  assert.match(await evaluate('document.querySelector(".skill-card .card-kicker").textContent'), /v2/, "editing should increment the skill version");
+  await evaluate('document.querySelector("[data-action=delete-skill]").click()');
+  assert.equal(await evaluate('document.querySelector("#appDialog").open'), true, "removal should require confirmation");
+  await evaluate('document.querySelector("#appDialogSubmit").click()');
+  assert.equal(await evaluate('document.querySelectorAll(".skill-card").length'), 0, "confirmed removal should remove the definition");
+  assert.equal(await evaluate('JSON.parse(localStorage.getItem("sparkle-data-v1")).skills.length'), 0, "removed definition should persist as removed");
   await evaluate('document.querySelector("[data-lab-tab]")?.click()');
   assert.deepEqual(runtimeErrors, [], `workspaces should not throw browser runtime exceptions: ${runtimeErrors.join("; ")}`);
 
@@ -512,7 +536,20 @@ try {
   await promptFor(["CRUD smoke learning edited","Intermediate","Edited learning goal"]);
   await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="learning"][data-id="${learningId}"]').click()`);
   assert.ok(await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").learningPlans||[]).some(x=>x.topic==="CRUD smoke learning edited"&&x.level==="Intermediate")'), "learning-plan edit should persist locally");
-
+  await evaluate(`document.querySelector("#learnTopicTitle-${learningId}").value="Coordinate frames"; document.querySelector("#learnTopicOutcome-${learningId}").value="Explain and solve a frame-composition example"; document.querySelector('[data-action="learning-topic-add"][data-plan-id="${learningId}"]').click()`);
+  const learningTopicId = await evaluate(`(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").learningPlans||[]).find(x=>x.id==="${learningId}")?.topics?.[0]?.id`);
+  assert.ok(learningTopicId, "ordered learning topic should persist");
+  await evaluate(`document.querySelector('[data-action="learning-session-start"][data-topic-id="${learningTopicId}"]').click()`);
+  await delay(1100);
+  await evaluate(`document.querySelector('[data-action="learning-session-pause"][data-topic-id="${learningTopicId}"]').click()`);
+  assert.ok(await evaluate(`(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").learningPlans||[]).find(x=>x.id==="${learningId}").topics[0].secondsStudied>=1`), "study session should persist elapsed time");
+  await promptFor(["5","4","Explained the coordinate frame composition and solved a concrete transform example with the correct order of operations.","Review multiplication order"]);
+  await evaluate(`document.querySelector('[data-action="learning-assess"][data-topic-id="${learningTopicId}"]').click()`);
+  const recordedLearningEvidence = await evaluate(`(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").learningPlans||[]).find(x=>x.id==="${learningId}").topics[0]`);
+  assert.equal(recordedLearningEvidence.assessments[0].score, 80, "assessment score should be computed from the recorded answer counts");
+  assert.equal(recordedLearningEvidence.assessments[0].source, "learner-reported");
+  assert.equal(recordedLearningEvidence.masteryStatus, "mastered", "mastery requires an assessment and written evidence");
+  assert.ok(recordedLearningEvidence.revisionDueAt, "assessment should schedule a suggested revision date");
   await evaluate('document.querySelector("[data-view=projects]").click(); document.querySelector("#projectName").value="CRUD smoke project"; document.querySelector("#projectOutcome").value="Original outcome"; document.querySelector("#projectCriteria").value="Original criteria"; document.querySelector("[data-action=save-project]").click()');
   const projectId = await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").projects||[]).find(x=>x.name==="CRUD smoke project")?.id');
   await promptFor(["CRUD smoke project edited","Edited outcome","Edited criteria"]);
@@ -609,7 +646,7 @@ try {
   assert.ok(exportedBackup, "backup export should produce a JSON Blob");
   assert.match(exportedBackup.filename, /^sparkle-gen3-backup-\d{4}-\d{2}-\d{2}\.json$/, "backup export should use a dated JSON filename");
   assert.equal(exportedBackup.payload.format, "sparkle-gen3-local-backup", "export should include the supported backup format marker");
-  assert.deepEqual(Object.keys(exportedBackup.payload.data).sort(), ["chat","conversations","goals","knowledge","labDrafts","learningPlans","projects","researchDrafts","tasks","workspaceChats","workspaceHistory"].sort(), "export should include every workspace collection");
+  assert.deepEqual(Object.keys(exportedBackup.payload.data).sort(), ["chat","conversations","goals","knowledge","labDrafts","learningPlans","projects","researchDrafts","skillRuns","skills","tasks","workspaceChats","workspaceHistory"].sort(), "export should include every workspace collection");
   await evaluate('URL.createObjectURL = window.__backupExportOriginalURL; HTMLAnchorElement.prototype.click = window.__backupExportOriginalClick; delete window.__backupExportOriginalURL; delete window.__backupExportOriginalClick; delete window.__backupExportBlob; delete window.__backupExportFilename');
   await setBackupFile(partialBackupPath);
   await delay(150);

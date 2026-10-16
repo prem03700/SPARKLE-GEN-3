@@ -37,6 +37,8 @@ class PrivateServerTests(unittest.TestCase):
         self.assertIn("Slide one title", server.extract_document_text("deck.pptx", slides.getvalue()))
         with self.assertRaisesRegex(ValueError, "signature"):
             server.extract_document_text("broken.docx", b"not a zip file")
+        with self.assertRaisesRegex(ValueError, "legacy Word document signature"):
+            server.extract_document_text("legacy.doc", b"not a binary Word document")
         with self.assertRaisesRegex(ValueError, "Supported document types"):
             server.extract_document_text("archive.exe", b"data")
         with self.assertRaisesRegex(ValueError, "50 MB"):
@@ -751,6 +753,14 @@ class PrivateServerTests(unittest.TestCase):
             "preferences": {"theme": "dark", "density": "Compact", "accent": "#123456", "memoryEnabled": True},
             "revision": 0,
         }
+        # Learning and skill collections have typed trusted-boundary contracts.
+        payload["data"]["learningPlans"] = [{"id": "learningPlans-1", "title": "persist learningPlans", "topic": "Persisted course", "topics": []}]
+        payload["data"]["skills"] = [{"id": "skills-1", "title": "persist skills", "name": "Test skill",
+            "description": "Test", "instructions": "Follow the test instructions.", "inputs": "Input",
+            "outputs": "Output", "dependencies": "None", "capabilities": "Text only", "enabled": True,
+            "version": 1, "createdAt": "now", "updatedAt": "now"}]
+        payload["data"]["skillRuns"] = [{"id": "skillRuns-1", "title": "persist skillRuns", "skillId": "skills-1",
+            "skillName": "Test skill", "version": 1, "input": "sample", "status": "succeeded", "createdAt": "now"}]
         self.assertEqual(self.request("/api/data", "PUT", payload, token)[0], 200)
         status, loaded = self.request("/api/data", token=token)
         self.assertEqual(status, 200)

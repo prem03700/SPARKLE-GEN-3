@@ -12,7 +12,7 @@ from personal_core import (
 
 DEFAULT_DATA = {name: [] for name in (
     "chat", "conversations", "workspaceChats", "tasks", "goals",
-    "knowledge", "projects", "researchDrafts", "learningPlans", "labDrafts",
+    "knowledge", "projects", "researchDrafts", "learningPlans", "labDrafts", "skills", "skillRuns",
 )}
 DEFAULT_PREFS = {"theme": "light", "density": "Comfortable", "accent": "#53684d", "memoryEnabled": False}
 
@@ -53,6 +53,42 @@ class PersonalCoreServiceTests(unittest.TestCase):
         self.assertEqual(data["tasks"], [{"id": "t1"}])
         self.assertEqual(data["goals"], [])
         self.assertEqual(prefs, {"theme": "dark", "density": "Compact", "accent": "#ABCDEF", "memoryEnabled": True})
+
+    def test_skill_definitions_and_run_history_are_persistable_and_bounded(self):
+        skill = {"id": "skill-1", "name": "Paper reviewer", "description": "Review a draft",
+                 "instructions": "Assess claims and evidence.", "inputs": "Paper text",
+                 "outputs": "Findings and risks", "dependencies": "None",
+                 "capabilities": "Text reasoning only", "enabled": True, "version": 2,
+                 "createdAt": "2026-10-16T00:00:00Z", "updatedAt": "2026-10-16T00:00:00Z"}
+        run = {"id": "run-1", "skillId": "skill-1", "skillName": "Paper reviewer",
+               "version": 2, "input": "review sample", "status": "succeeded",
+               "createdAt": "2026-10-16T00:00:00Z"}
+        normalized, _ = normalize_workspace_payload(
+            {**DEFAULT_DATA, "skills": [skill], "skillRuns": [run]},
+            DEFAULT_PREFS, DEFAULT_DATA, DEFAULT_PREFS)
+        self.assertEqual(normalized["skills"][0]["instructions"], "Assess claims and evidence.")
+        self.assertEqual(normalized["skillRuns"][0]["status"], "succeeded")
+
+    def test_skill_validation_rejects_empty_instructions_duplicate_names_and_oversized_input(self):
+        base = {"id": "skill-1", "name": "Reviewer", "instructions": "Review carefully.",
+                "enabled": True, "version": 1, "createdAt": "now", "updatedAt": "now"}
+        with self.assertRaisesRegex(WorkspaceValidationError, "instructions is required"):
+            normalize_workspace_payload({**DEFAULT_DATA, "skills": [{**base, "instructions": "  "}]},
+                                        DEFAULT_PREFS, DEFAULT_DATA, DEFAULT_PREFS)
+        with self.assertRaisesRegex(WorkspaceValidationError, "names must be unique"):
+            normalize_workspace_payload({**DEFAULT_DATA, "skills": [base, {**base, "id": "skill-2", "name": " reviewer "}]},
+                                        DEFAULT_PREFS, DEFAULT_DATA, DEFAULT_PREFS)
+        with self.assertRaisesRegex(WorkspaceValidationError, "12000 characters"):
+            normalize_workspace_payload({**DEFAULT_DATA, "skills": [{**base, "instructions": "x" * 12001}]},
+                                        DEFAULT_PREFS, DEFAULT_DATA, DEFAULT_PREFS)
+
+    def test_skill_runs_reject_invalid_status_and_oversized_history(self):
+        base = {"id": "run-1", "skillId": "skill-1", "skillName": "Reviewer",
+                "version": 1, "input": "sample", "status": "executed", "createdAt": "now"}
+        with self.assertRaisesRegex(WorkspaceValidationError, "status is invalid"):
+            normalize_workspace_payload({**DEFAULT_DATA, "skillRuns": [base]}, DEFAULT_PREFS, DEFAULT_DATA, DEFAULT_PREFS)
+        with self.assertRaisesRegex(WorkspaceValidationError, "Skill execution history"):
+            normalize_workspace_payload({**DEFAULT_DATA, "skillRuns": [None] * 501}, DEFAULT_PREFS, DEFAULT_DATA, DEFAULT_PREFS)
 
     def test_custom_theme_and_appearance_preferences_are_bounded_and_normalized(self):
         palette = {
@@ -258,6 +294,47 @@ class PersonalCoreServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(WorkspaceValidationError, "Decision must"):
             decide_action_proposal(self.con, proposal_id="p1", decision="execute",
                                    device_id="phone", decided_at="t4", audit_writer=self.audit_writer)
+
+
+    def test_learning_mastery_requires_recomputed_assessment_and_written_evidence(self):
+        plan = {"id": "plan-1", "topic": "Kinematics", "level": "Beginner", "goal": "Explain transforms",
+                "topics": [{"id": "topic-1", "title": "Frames", "masteryStatus": "mastered",
+                            "masteryEvidence": "Explained and solved a frame-composition problem with correct reasoning.", "secondsStudied": 60,
+                            "assessments": [{"id": "a1", "total": 5, "correct": 5, "score": 0,
+                                             "evidence": "Explained and solved a frame-composition problem."}]}]}
+        payload = {**DEFAULT_DATA, "learningPlans": [plan]}
+        normalized, _ = normalize_workspace_payload(payload, DEFAULT_PREFS, DEFAULT_DATA, DEFAULT_PREFS)
+        topic = normalized["learningPlans"][0]["topics"][0]
+        self.assertEqual(topic["assessments"][0]["score"], 100)
+        self.assertEqual(topic["assessments"][0]["source"], "learner-reported")
+        self.assertEqual(topic["masteryStatus"], "mastered")
+        self.assertEqual(plan["topics"][0]["assessments"][0]["score"], 0, "normalization must not mutate caller data")
+
+    def test_learning_mastery_flag_is_removed_without_sufficient_evidence(self):
+        plan = {"id": "plan-1", "topic": "Kinematics", "topics": [
+            {"id": "topic-1", "title": "Frames", "masteryStatus": "mastered",
+             "masteryEvidence": "Short", "secondsStudied": 0,
+             "assessments": [{"total": 10, "correct": 10, "evidence": "Short"}]}
+        ]}
+        normalized, _ = normalize_workspace_payload({**DEFAULT_DATA, "learningPlans": [plan]},
+                                                    DEFAULT_PREFS, DEFAULT_DATA, DEFAULT_PREFS)
+        self.assertEqual(normalized["learningPlans"][0]["topics"][0]["masteryStatus"], "not-mastered")
+
+    def test_learning_rejects_invalid_assessment_counts_and_duplicate_topics(self):
+        base = {"id": "plan-1", "topic": "Kinematics", "topics": [
+            {"id": "topic-1", "title": "Frames", "assessments": [
+                {"total": 2, "correct": 3, "evidence": "This count is impossible."}
+            ]}
+        ]}
+        with self.assertRaisesRegex(WorkspaceValidationError, "answer counts are invalid"):
+            normalize_workspace_payload({**DEFAULT_DATA, "learningPlans": [base]},
+                                        DEFAULT_PREFS, DEFAULT_DATA, DEFAULT_PREFS)
+        duplicate = {"id": "plan-1", "topic": "Kinematics", "topics": [
+            {"id": "topic-1", "title": "Frames"}, {"id": "topic-1", "title": "Transforms"}
+        ]}
+        with self.assertRaisesRegex(WorkspaceValidationError, "IDs must be unique within a plan"):
+            normalize_workspace_payload({**DEFAULT_DATA, "learningPlans": [duplicate]},
+                                        DEFAULT_PREFS, DEFAULT_DATA, DEFAULT_PREFS)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,141 @@ def normalize_workspace_payload(
         raise WorkspaceValidationError("Preferences schema is invalid.")
 
     merged = {name: data.get(name, []) for name in default_data}
+    # Reusable skills are bounded instruction definitions, never executable
+    # code or permission grants. Validate at the authoritative server boundary.
+    skills = merged.get("skills", [])
+    if len(skills) > 200:
+        raise WorkspaceValidationError("Skill catalog is limited to 200 definitions.")
+    skill_ids, skill_names = set(), set()
+    skill_fields = {"name": 80, "description": 300, "instructions": 12000,
+                    "inputs": 2000, "outputs": 2000, "dependencies": 1000,
+                    "capabilities": 500}
+    for skill in skills:
+        if not isinstance(skill, dict):
+            raise WorkspaceValidationError("Each skill definition must be an object.")
+        identifier = skill.get("id")
+        if not isinstance(identifier, str) or not identifier.strip() or len(identifier) > 100:
+            raise WorkspaceValidationError("Each skill needs a valid ID.")
+        if identifier in skill_ids:
+            raise WorkspaceValidationError("Skill IDs must be unique.")
+        skill_ids.add(identifier)
+        for field, limit in skill_fields.items():
+            value = skill.get(field, "")
+            if not isinstance(value, str) or len(value) > limit:
+                raise WorkspaceValidationError(f"Skill {field} must be text no longer than {limit} characters.")
+            if field in {"name", "instructions"} and not value.strip():
+                raise WorkspaceValidationError(f"Skill {field} is required.")
+        normalized_name = skill["name"].strip().casefold()
+        if normalized_name in skill_names:
+            raise WorkspaceValidationError("Skill names must be unique.")
+        skill_names.add(normalized_name)
+        if not isinstance(skill.get("enabled", True), bool):
+            raise WorkspaceValidationError("Skill enabled flag must be boolean.")
+        version = skill.get("version", 1)
+        if not isinstance(version, int) or isinstance(version, bool) or not 1 <= version <= 10000:
+            raise WorkspaceValidationError("Skill version must be an integer from 1 to 10000.")
+        for field in ("createdAt", "updatedAt"):
+            value = skill.get(field, "")
+            if not isinstance(value, str) or len(value) > 80:
+                raise WorkspaceValidationError(f"Skill {field} must be a short timestamp string.")
+    runs = merged.get("skillRuns", [])
+    if len(runs) > 500:
+        raise WorkspaceValidationError("Skill execution history is limited to 500 records.")
+    valid_run_statuses = {"running", "succeeded", "failed"}
+    for run in runs:
+        if not isinstance(run, dict):
+            raise WorkspaceValidationError("Each skill run must be an object.")
+        if not isinstance(run.get("id"), str) or not run["id"].strip() or len(run["id"]) > 100:
+            raise WorkspaceValidationError("Each skill run needs a valid ID.")
+        if not isinstance(run.get("skillId"), str) or len(run["skillId"]) > 100:
+            raise WorkspaceValidationError("Each skill run needs a valid skill reference.")
+        if not isinstance(run.get("skillName", ""), str) or len(run.get("skillName", "")) > 80:
+            raise WorkspaceValidationError("Skill run name is invalid.")
+        if not isinstance(run.get("input", ""), str) or len(run.get("input", "")) > 4000:
+            raise WorkspaceValidationError("Skill run input exceeds 4000 characters.")
+        if run.get("status") not in valid_run_statuses:
+            raise WorkspaceValidationError("Skill run status is invalid.")
+        if not isinstance(run.get("resultSummary", ""), str) or len(run.get("resultSummary", "")) > 800:
+            raise WorkspaceValidationError("Skill run result summary exceeds 800 characters.")
+        if not isinstance(run.get("error", ""), str) or len(run.get("error", "")) > 400:
+            raise WorkspaceValidationError("Skill run error exceeds 400 characters.")
+        if not isinstance(run.get("completedAt", ""), str) or len(run.get("completedAt", "")) > 80:
+            raise WorkspaceValidationError("Skill run completion timestamp is invalid.")
+        if not isinstance(run.get("version", 1), int) or isinstance(run.get("version", 1), bool) or not 1 <= run.get("version", 1) <= 10000:
+            raise WorkspaceValidationError("Skill run version is invalid.")
+    # Learning records share the workspace snapshot with every other domain.
+    # Recompute assessment percentages at the trusted boundary and never accept
+    # a mastered flag without a valid learner-reported result plus written evidence.
+    plans = json.loads(json.dumps(merged.get("learningPlans", []), ensure_ascii=False))
+    merged["learningPlans"] = plans
+    if len(plans) > 500:
+        raise WorkspaceValidationError("Learning plans are limited to 500 records.")
+    plan_ids = set()
+    for plan in plans:
+        if not isinstance(plan, dict):
+            raise WorkspaceValidationError("Each learning plan must be an object.")
+        identifier, title = plan.get("id"), plan.get("topic")
+        if not isinstance(identifier, str) or not identifier.strip() or len(identifier) > 100:
+            raise WorkspaceValidationError("Each learning plan needs a valid ID.")
+        if identifier in plan_ids:
+            raise WorkspaceValidationError("Learning plan IDs must be unique.")
+        plan_ids.add(identifier)
+        if not isinstance(title, str) or not title.strip() or len(title) > 180:
+            raise WorkspaceValidationError("Learning plan topic must be 1–180 characters.")
+        if not isinstance(plan.get("goal", ""), str) or len(plan.get("goal", "")) > 2000:
+            raise WorkspaceValidationError("Learning plan goal exceeds 2000 characters.")
+        topics = plan.get("topics", [])
+        if not isinstance(topics, list) or len(topics) > 200:
+            raise WorkspaceValidationError("Each learning plan may contain at most 200 topics.")
+        topic_ids = set()
+        for topic in topics:
+            if not isinstance(topic, dict):
+                raise WorkspaceValidationError("Each learning topic must be an object.")
+            topic_id, topic_title = topic.get("id"), topic.get("title")
+            if not isinstance(topic_id, str) or not topic_id.strip() or len(topic_id) > 100:
+                raise WorkspaceValidationError("Each learning topic needs a valid ID.")
+            if topic_id in topic_ids:
+                raise WorkspaceValidationError("Learning topic IDs must be unique within a plan.")
+            topic_ids.add(topic_id)
+            if not isinstance(topic_title, str) or not topic_title.strip() or len(topic_title) > 180:
+                raise WorkspaceValidationError("Learning topic title must be 1–180 characters.")
+            assessments = topic.get("assessments", [])
+            if not isinstance(assessments, list) or len(assessments) > 100:
+                raise WorkspaceValidationError("Each learning topic may contain at most 100 assessments.")
+            valid_assessments = []
+            for assessment in assessments:
+                if not isinstance(assessment, dict):
+                    raise WorkspaceValidationError("Learning assessment must be an object.")
+                total, correct = assessment.get("total"), assessment.get("correct")
+                evidence = assessment.get("evidence", "")
+                if (not isinstance(total, int) or isinstance(total, bool) or not 1 <= total <= 1000
+                        or not isinstance(correct, int) or isinstance(correct, bool) or not 0 <= correct <= total):
+                    raise WorkspaceValidationError("Learning assessment answer counts are invalid.")
+                if not isinstance(evidence, str) or len(evidence) > 1500:
+                    raise WorkspaceValidationError("Learning assessment evidence is invalid.")
+                valid_assessments.append({**assessment, "score": round(correct / total * 100),
+                                          "evidence": evidence, "source": "learner-reported"})
+            topic["assessments"] = valid_assessments
+            seconds = topic.get("secondsStudied", 0)
+            if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not 0 <= seconds <= 31536000:
+                raise WorkspaceValidationError("Recorded learning time is invalid.")
+            evidence_text = topic.get("masteryEvidence", "")
+            if not isinstance(evidence_text, str) or len(evidence_text) > 1500:
+                raise WorkspaceValidationError("Learning mastery evidence is invalid.")
+            has_evidence = any(a["score"] >= 80 and len(a["evidence"].strip()) >= 30 for a in valid_assessments)
+            if topic.get("masteryStatus") == "mastered" and not (has_evidence and len(evidence_text.strip()) >= 30):
+                topic["masteryStatus"] = "not-mastered"
+            elif topic.get("masteryStatus") != "mastered":
+                topic["masteryStatus"] = "not-mastered"
+            topic["activeSession"] = bool(topic.get("activeSession", False))
+            if not topic["activeSession"]:
+                topic["activeSince"] = None
+            elif not isinstance(topic.get("activeSince"), str):
+                topic["activeSession"] = False
+                topic["activeSince"] = None
+            status = topic.get("status")
+            if status not in {"not-started", "in-progress", "assessed", "completed"}:
+                topic["status"] = "not-started"
     # Coding & IDE files are durable text records in the shared workspace, not
     # executable artifacts. Enforce their shape and size at the trusted boundary.
     for record in merged.get("projects", []):

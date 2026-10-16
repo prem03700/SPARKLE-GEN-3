@@ -1,0 +1,18 @@
+[Unit]
+Description=Encrypted SPARKLE GEN-3 full-state backup
+Wants=network-online.target
+After=network-online.target
+OnFailure=sparkle-gen3-backup-failure.service
+
+[Service]
+Type=oneshot
+User=prem-macharla
+Group=prem-macharla
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+ExecStart=/usr/bin/python3 "/home/prem-macharla/SPARKLE GEN-3/tools/full_state_backup.py" --remote gdrive:SPARKLE-GEN3-Backups

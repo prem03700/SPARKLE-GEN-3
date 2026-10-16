@@ -1,0 +1,11 @@
+[Unit]
+Description=Notify owner when SPARKLE GEN-3 backup fails
+
+[Service]
+Type=oneshot
+User=prem-macharla
+Group=prem-macharla
+UMask=0077
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+ExecStart=/bin/sh -c '/usr/bin/notify-send --urgency=critical --app-name=SPARKLE "SPARKLE backup failed" "The encrypted GEN-3 backup failed. Inspect the journal for sparkle-gen3-backup.service." || /usr/bin/logger --priority user.crit --tag sparkle-gen3-backup "Desktop notification unavailable; encrypted GEN-3 backup failed. Inspect the journal for sparkle-gen3-backup.service."'

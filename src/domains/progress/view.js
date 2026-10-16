@@ -7,6 +7,10 @@ export function progressView({state,names,pageHeading,escapeHTML}) {
   const research=Array.isArray(state.researchDrafts)?state.researchDrafts:[];
   const lab=Array.isArray(state.labDrafts)?state.labDrafts:[];
   const knowledge=Array.isArray(state.knowledge)?state.knowledge:[];
+  const learningTopics=learning.flatMap(plan=>Array.isArray(plan?.topics)?plan.topics:[]);
+  const masteredTopics=learningTopics.filter(topic=>topic?.masteryStatus==="mastered"&&Array.isArray(topic.assessments)&&topic.assessments.some(a=>a&&Number.isInteger(a.total)&&a.total>0&&Number.isInteger(a.correct)&&a.correct>=0&&a.correct<=a.total&&typeof a.evidence==="string"&&a.evidence.trim().length>=30&&Math.round(a.correct/a.total*100)>=80));
+  const studySeconds=learningTopics.reduce((sum,topic)=>sum+Math.max(0,Number(topic?.secondsStudied)||0),0);
+  const assessmentCount=learningTopics.reduce((sum,topic)=>sum+(Array.isArray(topic?.assessments)?topic.assessments.length:0),0);
   const conversations=Array.isArray(state.conversations)?state.conversations:[];
   const doneTasks=tasks.filter(item=>item&&item.done).length;
   const doneGoals=goals.filter(item=>item&&item.done).length;
@@ -29,6 +33,8 @@ export function progressView({state,names,pageHeading,escapeHTML}) {
       metric("Goals completed",doneGoals+'/'+goals.length,goals.length?pct(doneGoals,goals.length)+'% complete':'No goals created yet')+
       metric("Project briefs",projects.length,"Saved projects")+
       metric("Learning plans",learning.length,"Saved learning plans")+
+      metric("Mastered topics",masteredTopics.length,learningTopics.length+" ordered topics · evidence required")+
+      metric("Study time",Math.floor(studySeconds/60)+" min",assessmentCount+" learner-reported assessments")+
       metric("Research drafts",research.length,"Saved research questions")+
       metric("Knowledge notes",knowledge.length,"Saved notes")+
       metric("R&D drafts",lab.length,"Saved lab drafts")+

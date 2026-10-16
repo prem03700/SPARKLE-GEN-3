@@ -127,6 +127,11 @@ AGENTS = {
     "coding": ("Coding Assistant", "Help debug and design code carefully. Explain assumptions and tests. Do not claim code ran unless a real execution result is supplied."),
     "projects": ("Project Assistant", "Help define outcomes, scope, milestones, dependencies, risks, and explicit next actions. Do not silently create tasks."),
     "rd": ("R&D Assistant", "Help formulate hypotheses, experiments, metrics, controls, and reproducibility plans. Do not claim simulations or experiments ran unless verified."),
+    "knowledge": ("Knowledge Assistant", "Help organize and explain notes or documents supplied in the conversation. Never claim to have searched stored notes unless their contents are supplied; distinguish source facts from inference."),
+    "tasks": ("Tasks & Goals Assistant", "Help clarify priorities, break outcomes into actionable steps, estimate effort, and plan realistic schedules. Do not claim tasks or goals were saved or changed; the user controls workspace records."),
+    "progress": ("Progress Coach", "Help interpret progress data the user provides, identify bottlenecks, and suggest measurable next steps. Do not invent metrics or claim access to records not included in the conversation."),
+    "settings": ("SPARKLE Help Assistant", "Explain SPARKLE settings, privacy, backups, pairing, and troubleshooting clearly. Never ask the user to reveal passwords, pairing codes, API keys, or other secrets."),
+    "appearance": ("Appearance Designer", "Help design accessible interface themes, layout, typography, visual motifs, and 2D/3D-inspired appearance. Give concrete suggestions; do not claim to have applied a change unless a verified tool result says so."),
 }
 
 CHAT_HISTORY_CHAR_BUDGET = 24000
@@ -272,7 +277,7 @@ def build_chat_context(agent, cleaned_messages, memory_enabled=False, knowledge=
             memory_used = True
     return [{"role": "system", "content": system}, *selected_history], memory_used
 
-DEFAULT_DATA = {k: [] for k in ("chat", "conversations", "workspaceChats", "tasks", "goals", "knowledge", "projects", "researchDrafts", "workspaceHistory", "learningPlans", "labDrafts")}
+DEFAULT_DATA = {k: [] for k in ("chat", "conversations", "workspaceChats", "tasks", "goals", "knowledge", "projects", "researchDrafts", "workspaceHistory", "learningPlans", "labDrafts", "skills", "skillRuns")}
 DEFAULT_PREFS = {"theme": "aurora", "density": "Comfortable", "accent": "#56d8d1", "memoryEnabled": False, "workspaceAppearance": {}}
 
 PRIVATE_NETWORKS = tuple(ipaddress.ip_network(value) for value in (
@@ -429,8 +434,8 @@ def extract_document_text(filename, raw_bytes):
 
     name = str(filename or "").replace("\\", "/").split("/")[-1][:160]
     suffix = Path(name).suffix.lower()
-    if suffix not in {".pdf", ".docx", ".xlsx", ".pptx"}:
-        raise ValueError("Supported document types are PDF, DOCX, XLSX, and PPTX.")
+    if suffix not in {".pdf", ".doc", ".docx", ".xlsx", ".pptx"}:
+        raise ValueError("Supported document types are PDF, DOC, DOCX, XLSX, and PPTX.")
     if not isinstance(raw_bytes, bytes) or not raw_bytes or len(raw_bytes) > MAX_KNOWLEDGE_IMPORT_BYTES:
         raise ValueError("Documents must be non-empty and no larger than 50 MB.")
     if suffix == ".pdf":
@@ -487,6 +492,28 @@ def extract_document_text(filename, raw_bytes):
                                 if page_text: ocr_chunks.append(f"[OCR page {page_number}]\n{page_text}")
                         if ocr_chunks:
                             text = "[OCR-extracted text from a scanned PDF; OCR may contain errors. Verify against the original pages.]\n\n" + "\n\n".join(ocr_chunks)
+    elif suffix == ".doc":
+        # Legacy binary Word files are converted locally by LibreOffice in a private
+        # temporary profile; macros are not executed and no document is sent remotely.
+        if not raw_bytes.startswith(bytes.fromhex("D0CF11E0A1B11AE1")):
+            raise ValueError("The file does not have a valid legacy Word document signature.")
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="sparkle-knowledge-doc-") as temp_dir:
+            temp_path = Path(temp_dir)
+            source = temp_path / "source.doc"
+            source.write_bytes(raw_bytes)
+            profile = (temp_path / "lo-profile").as_uri()
+            try:
+                converted = run(["/usr/bin/libreoffice", "-env:UserInstallation=" + profile,
+                                 "--headless", "--convert-to", "txt:Text", "--outdir", temp_dir, str(source)],
+                                stdout=__import__("subprocess").DEVNULL,
+                                stderr=__import__("subprocess").DEVNULL, timeout=20, check=False)
+            except (OSError, TimeoutExpired):
+                raise ValueError("Legacy DOC extraction is unavailable or the document took too long.")
+            output = temp_path / "source.txt"
+            if converted.returncode != 0 or not output.is_file() or output.stat().st_size > 1_000_000:
+                raise ValueError("The legacy DOC document is damaged or could not be converted safely.")
+            text = output.read_text(encoding="utf-8", errors="replace")
     else:
         if not raw_bytes.startswith(b"PK\x03\x04"):
             raise ValueError("The file does not have a valid Office Open XML signature.")
@@ -1745,7 +1772,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self.close_connection = True
                 self.send_json(400, {"error": "Transfer-encoded uploads are not supported."}); return
             filename = Path(unquote(self.headers.get("X-Document-Name", "document.pdf"))).name[:160]
-            allowed_documents = {".pdf", ".docx", ".xlsx", ".pptx"}
+            allowed_documents = {".pdf", ".doc", ".docx", ".xlsx", ".pptx"}
             allowed_text = {".txt", ".md", ".markdown", ".rst", ".rtf", ".csv", ".tsv", ".json", ".ipynb", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".log", ".xml", ".html", ".htm", ".css", ".scss", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".svelte", ".py", ".pyw", ".java", ".kt", ".kts", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".dart", ".lua", ".r", ".m", ".sql", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".tf", ".graphql", ".proto", ".tex"}
             suffix = Path(filename).suffix.lower()
             if suffix not in allowed_documents | allowed_text:

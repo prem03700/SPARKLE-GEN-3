@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily SPARKLE GEN-3 encrypted backup schedule
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=sparkle-gen3-backup.service
+
+[Install]
+WantedBy=timers.target

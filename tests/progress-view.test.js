@@ -28,3 +28,13 @@ test("progress overview renders a helpful empty state",()=>{
   assert.match(html,/Nothing here yet/);
   assert.match(html,/Tasks completed/);
 });
+
+test("progress derives learning mastery, time and assessment totals from saved evidence",()=>{
+  const state=createInitialUIState("light");
+  state.learningPlans=[{id:"lp",topic:"Kinematics",topics:[{id:"t",title:"Frames",masteryStatus:"mastered",secondsStudied:900,assessments:[{total:5,correct:4,evidence:"Explained and solved a transform composition problem."}]}]}];
+  const html=progressView({state,names,pageHeading,escapeHTML});
+  assert.match(html,/Mastered topics/);
+  assert.match(html,/Study time/);
+  assert.match(html,/15 min/);
+  assert.match(html,/1 ordered topics · evidence required/);
+});

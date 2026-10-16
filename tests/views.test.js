@@ -93,9 +93,63 @@ test("every workspace view renders independently from the app shell", () => {
   assert.match(auditSettings, /workspace.updated/);
 });
 
+test("Skills workspace distinguishes reusable definitions from run history and escapes content", () => {
+  const state=createInitialUIState("light");
+  state.skills=[{id:"skill-1",name:"Reviewer <safe>",description:"Review a sample",instructions:"Never trust <input>",inputs:"Draft text",outputs:"Findings",dependencies:"None",capabilities:"Text reasoning only",enabled:true,version:3,createdAt:"2026-10-15T00:00:00Z",updatedAt:"2026-10-16T00:00:00Z"}];
+  state.skillRuns=[{id:"run-1",skillId:"skill-1",skillName:"Reviewer <safe>",version:2,input:"sample",status:"succeeded",resultSummary:"Sample result",createdAt:"2026-10-16T00:00:00Z"}];
+  const html=learningView({state,names,pageHeading,card,escapeHTML});
+  assert.match(html,/Reusable skill/);
+  assert.match(html,/Reviewer &lt;safe&gt;/);
+  assert.match(html,/Never trust &lt;input&gt;/);
+  assert.match(html,/v3/);
+  assert.match(html,/1 recorded run/);
+  assert.match(html,/Sample result/);
+  assert.match(html,/data-action="invoke-skill"/);
+  assert.match(html,/data-action="test-skill"/);
+  assert.match(html,/data-action="edit-skill"/);
+  assert.match(html,/data-action="delete-skill"/);
+  assert.match(html,/Capabilities/);
+  assert.match(html,/@skill Skill Name: your request/);
+  const source=readFileSync(new URL("../src/app.js",import.meta.url),"utf8");
+  assert.match(source,/Reusable skill definition:/);
+  assert.match(source,/This skill definition grants no tool permissions/);
+  assert.match(source,/case "toggle-skill"/);
+});
+
+test("Research renders saved source sessions with open/delete and export controls", () => {
+  const state=createInitialUIState("light");
+  state.researchQuery="visual SLAM";
+  state.researchSearchResults=[{title:"Paper <one>",authors:["A. Author"],year:2024,doi:"10.1234/test",url:"https://doi.org/10.1234/test"}];
+  state.researchActiveSessionId="research-session-1";
+  state.workspaceHistory=[{id:"research-session-1",workspace:"research",researchType:"crossref",provider:"Crossref",query:"visual SLAM",createdAt:"2026-10-16T00:00:00Z",results:state.researchSearchResults}];
+  const html=researchView({state,names,pageHeading,card,escapeHTML});
+  assert.match(html,/visual SLAM/);
+  assert.match(html,/Paper &lt;one&gt;/);
+  assert.match(html,/data-action="open-research-session"/);
+  assert.match(html,/data-action="delete-research-session"/);
+  assert.match(html,/data-action="export-research-report"/);
+  assert.match(html,/saved results/);
+  const appSource=readFileSync(new URL("../src/app.js",import.meta.url),"utf8");
+  assert.match(appSource,/function restoreResearchSession\(/);
+  assert.match(appSource,/case "open-research-session"/);
+  assert.match(appSource,/case "delete-research-session"/);
+  assert.match(appSource,/case "export-research-report"/);
+});
+
 test("R&D tabs have a valid initial view", () => {
   const html = labView({state:createInitialUIState("light"),names,pageHeading,card});
   assert.match(html,/Simulation/);
   assert.match(html,/Experiments/);
   assert.match(html,/Reproducibility/);
+});
+
+test("Learning renders ordered topics, evidence-based assessments, sessions, revision, and workspace links", () => {
+  const state=createInitialUIState("light");
+  state.learningPlans=[{id:"plan-1",topic:"Robot kinematics",level:"Beginner",goal:"Explain forward kinematics",createdAt:"2026-10-16T00:00:00Z",topics:[{id:"topic-1",title:"Coordinate frames",outcome:"Explain frame transforms",order:0,status:"assessed",masteryStatus:"mastered",secondsStudied:600,assessments:[{id:"assessment-1",total:5,correct:4,score:80,evidence:"Explained the frame composition and solved a transform example.",source:"learner-reported"}],masteryEvidence:"Explained the frame composition and solved a transform example."}]}];
+  state.goals=[{id:"goal-1",title:"Master robotics foundations",done:false}];
+  const html=learningView({state,names,pageHeading,card,escapeHTML});
+  for(const token of ["Ordered topics & study sessions","Coordinate frames","learning-session-start","learning-session-pause","learning-assess","learning-revision","learning-topic-add","learning-create-task","learning-plan-goal","Lesson completion alone never marks mastery","self-reported assessment"]) assert.ok(html.includes(token), "missing learning UI token: "+token);
+  const appSource=readFileSync(new URL("../src/app.js",import.meta.url),"utf8");
+  for(const token of ["learning-session-start","learning-session-pause","learning-assess","learning-revision","learning-topic-add","learning-topic-edit","learning-topic-delete","learning-create-task","Recovered after reload; session paused","source:\"learner-reported\""]) assert.ok(appSource.includes(token), "missing learning action: "+token);
+  assert.match(appSource,/data\.learningPlans=\(data\.learningPlans\|\|\[\]\).*topics:/);
 });
