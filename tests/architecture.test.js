@@ -86,3 +86,14 @@ test("frontend uses only its same-origin API and avoids arbitrary network and dy
     }
   }
 });
+
+test("conversation navigation and destructive history actions are blocked during active generation", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const source = await readFile(resolve(import.meta.dirname, "../src/app.js"), "utf8");
+  assert.match(source, /function switchView\(view,assistant\)\{if\(activeChatRequest&&\(view!==state\.view\|\|\(assistant&&assistant!==state\.assistant\)\)\)/);
+  assert.match(source, /case "open-conversation":\{if\(activeChatRequest\)/);
+  assert.match(source, /case "delete-conversation":\{if\(activeChatRequest\)/);
+  assert.match(source, /case "clear-history":\{if\(activeChatRequest\)/);
+  assert.match(source, /\$\("#newChat"\)\.addEventListener\("click",\(\)=>\{if\(activeChatRequest\)/);
+});
