@@ -1242,7 +1242,7 @@ class Handler(SimpleHTTPRequestHandler):
             # emit noisy tracebacks when its eventual response cannot be delivered.
             self.close_connection = True
 
-    def read_json(self):
+    def read_json(self, max_size=MAX_BODY):
         # Reject ambiguous HTTP framing rather than attempting to parse chunked or
         # missing-length request bodies on this deliberately small HTTP server.
         if self.headers.get("Transfer-Encoding"):
@@ -1261,7 +1261,7 @@ class Handler(SimpleHTTPRequestHandler):
         if size < 0:
             self.send_json(400, {"error": "Content-Length is invalid."})
             return None
-        if size > MAX_BODY:
+        if size > max_size:
             self.close_connection = True
             self.send_json(413, {"error": "Request body is invalid or too large."})
             return None
@@ -2010,7 +2010,10 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_json(404, {"error": "Unknown API endpoint."}); return
         device = self.authenticate()
         if not device: return
-        body = self.read_json()
+        # Workspace snapshots can legitimately grow beyond the small default JSON
+        # request limit as Knowledge notes and synchronized workspace records accumulate.
+        # Keep the 2 MB default for ordinary API requests, but allow bounded sync payloads.
+        body = self.read_json(max_size=60 * 1024 * 1024)
         if body is None: return
         data, prefs = body.get("data"), body.get("preferences", {})
         expected_revision = body.get("revision")
