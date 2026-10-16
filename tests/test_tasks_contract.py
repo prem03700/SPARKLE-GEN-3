@@ -1,13 +1,13 @@
 import unittest
 
 from personal_core import WorkspaceValidationError, normalize_workspace_payload
-from server import DEFAULT_DATA, DEFAULT_PREFERENCES
+from server import DEFAULT_DATA, DEFAULT_PREFS
 
 
 class TaskRecordContractTests(unittest.TestCase):
     def normalize(self, tasks):
         data = {**DEFAULT_DATA, "tasks": tasks}
-        return normalize_workspace_payload(data, {}, DEFAULT_DATA, DEFAULT_PREFERENCES)[0]["tasks"]
+        return normalize_workspace_payload(data, {}, DEFAULT_DATA, DEFAULT_PREFS)[0]["tasks"]
 
     def test_accepts_structured_task_and_preserves_calendar_date(self):
         task = {
@@ -33,7 +33,7 @@ class TaskRecordContractTests(unittest.TestCase):
 
     def test_normalizes_legacy_comma_separated_tags_without_changing_existing_shape(self):
         task = {"id": "task-1", "title": "Legacy", "tags": "one, two"}
-        normalized, _ = normalize_workspace_payload({**DEFAULT_DATA, "tasks": [task]}, {}, DEFAULT_DATA, DEFAULT_PREFERENCES)
+        normalized, _ = normalize_workspace_payload({**DEFAULT_DATA, "tasks": [task]}, {}, DEFAULT_DATA, DEFAULT_PREFS)
         self.assertEqual(normalized["tasks"][0]["tags"], ["one", "two"])
         self.assertEqual(task["tags"], "one, two")
 

@@ -491,6 +491,23 @@ try {
   await promptFor(["SPARKLE browser task edited","Edited task details"]);
   await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="task"][data-id="${taskId}"]').click()`);
   assert.ok(await evaluate('(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").tasks||[]).some(x=>x.title==="SPARKLE browser task edited"&&x.details==="Edited task details")'), "task edit should persist locally");
+  await delay(25);
+  await promptFor(["SPARKLE browser task edited","Edited task details","in-progress","high","2026-10-20","smoke, due-date","",""]);
+  await evaluate(`document.querySelector('[data-action="edit-item"][data-kind="task"][data-id="${taskId}"]').click()`);
+  const taskMetadata = await evaluate(`(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").tasks||[]).find(x=>x.id===${JSON.stringify(taskId)})`);
+  assert.equal(taskMetadata.status, "in-progress", "task status edit should persist");
+  assert.equal(taskMetadata.priority, "high", "task priority edit should persist");
+  assert.equal(taskMetadata.dueDate, "2026-10-20", "date input should preserve a local calendar date without UTC conversion");
+  assert.deepEqual(taskMetadata.tags, ["smoke","due-date"], "comma-separated tags should normalize into labels");
+  await evaluate('document.querySelector("#taskSearch").value="due-date"; document.querySelector("#taskSearch").dispatchEvent(new Event("input",{bubbles:true}))');
+  assert.equal(await evaluate(`document.querySelector('[data-task-row][data-id="${taskId}"]')===null && [...document.querySelectorAll("[data-task-row]")].filter(row=>!row.hidden).length===1 && document.querySelector("#taskVisibleCount").textContent==="1"`), true, "task search should filter rows immediately by tag");
+  await evaluate('document.querySelector("#taskSearch").value=""; document.querySelector("#taskSearch").dispatchEvent(new Event("input",{bubbles:true})); document.querySelector("#taskStatusFilter").value="open"; document.querySelector("#taskStatusFilter").dispatchEvent(new Event("change",{bubbles:true}))');
+  assert.equal(await evaluate(`document.querySelector('[data-task-row] input[data-id="${taskId}"]')?.closest("[data-task-row]").hidden`), true, "status filter should hide in-progress tasks when Open is selected");
+  await evaluate('document.querySelector("#taskStatusFilter").value="all"; document.querySelector("#taskStatusFilter").dispatchEvent(new Event("change",{bubbles:true}))');
+  await evaluate(`document.querySelector('[data-action="toggle-item"][data-id="${taskId}"]').click()`);
+  assert.equal(await evaluate(`(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").tasks||[]).find(x=>x.id===${JSON.stringify(taskId)}).status`), "completed", "task checkbox should complete a task");
+  await evaluate(`document.querySelector('[data-action="toggle-item"][data-id="${taskId}"]').click()`);
+  assert.equal(await evaluate(`(JSON.parse(localStorage.getItem("sparkle-data-v1")||"{}").tasks||[]).find(x=>x.id===${JSON.stringify(taskId)}).status`), "open", "unchecking a completed task should reopen it");
   // Native dialog close events are queued as a separate browser task. Wait for
   // that lifecycle event before opening the next edit dialog in this smoke run.
   await delay(25);
