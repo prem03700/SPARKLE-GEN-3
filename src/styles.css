@@ -312,7 +312,7 @@ body{font-size:var(--font-size-base,15px)}
 .custom-color-grid input[type=color]{width:100%;height:42px;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--surface)}
 .custom-theme-preview{display:grid;gap:8px;padding:18px;border:1px solid;border-radius:var(--radius);margin:12px 0 16px;min-height:110px}
 .custom-theme-preview strong{font-size:15px;letter-spacing:.08em}
-.custom-theme-preview span{font-size:12px}
+.custom-theme-preview span{font-size:12px;padding:8px 10px;border-radius:8px;background:var(--preview-surface,transparent)}
 .custom-theme-preview button{justify-self:start;border:1px solid;border-radius:8px;padding:8px 12px}
 .custom-import-label{display:inline-flex;align-items:center;cursor:pointer}
 .custom-theme-list{display:grid;gap:7px;margin-top:12px}

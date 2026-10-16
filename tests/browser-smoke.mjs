@@ -146,6 +146,11 @@ try {
   assert.ok(await evaluate('getComputedStyle(document.body).fontFamily.includes("system-ui")'), "UI should use the system font stack without relying on a missing remote font");
   await evaluate('document.querySelector("[data-view=settings]").click()');
   assert.equal(await evaluate('!!document.querySelector(".connection-card")'), true, "Settings should retain private device and Personal Core controls");
+  assert.equal(await evaluate('!!document.querySelector("[data-action=save-memory-setting]")'), true, "Knowledge memory preference must have an explicit save action");
+  await evaluate('document.querySelector("#memoryEnabled").checked=true; document.querySelector("[data-action=save-memory-setting]").click()');
+  assert.equal(await evaluate('JSON.parse(localStorage.getItem("sparkle-memory-enabled"))'), true, "Knowledge memory preference should persist when saved");
+  await evaluate('document.querySelector("#memoryEnabled").checked=false; document.querySelector("[data-action=save-memory-setting]").click()');
+  assert.equal(await evaluate('JSON.parse(localStorage.getItem("sparkle-memory-enabled"))'), false, "Knowledge memory preference should be reversible");
   assert.equal(await evaluate('document.querySelectorAll("[data-theme-choice]").length'), 0, "theme gallery must not be embedded in Settings");
   assert.equal(await evaluate('!!document.querySelector("#customThemeName")'), false, "custom theme creator must live only in the dedicated appearance tab");
   assert.equal(await evaluate('!!document.querySelector("#themeSourceImage")'), false, "image-to-theme tools must not be embedded in Settings");
@@ -172,6 +177,9 @@ try {
   await evaluate('document.querySelector("#fontScale").value = "17"; document.querySelector("#radiusScale").value = "18"; document.querySelector("#contrastMode").value = "high"; document.querySelector("[data-action=save-advanced-appearance]").click()');
   assert.equal(await evaluate('document.documentElement.style.getPropertyValue("--font-size-base")'), "17px", "advanced text scale should apply");
   assert.equal(await evaluate('document.documentElement.dataset.contrast'), "high", "high-contrast setting should apply");
+  await evaluate('document.querySelector("#customThemeName").value = "Unsaved Preview"; document.querySelector("#customAccent").value = "#44aa88"; document.querySelector("[data-action=preview-custom-theme]").click()');
+  assert.equal(await evaluate('document.querySelectorAll(".custom-theme-row").length'), 0, "preview must not silently create a saved theme");
+  assert.equal(await evaluate('document.documentElement.dataset.theme'), "light", "custom preview must not replace the active theme");
   await evaluate('document.querySelector("#customThemeName").value = "Browser Smoke Palette"; document.querySelector("#customBg").value = "#121923"; document.querySelector("#customAccent").value = "#ff8844"; document.querySelector("[data-action=save-custom-theme]").click()');
   assert.equal(await evaluate('document.documentElement.dataset.theme'), "custom", "saved custom palette should become active");
   assert.equal(await evaluate('getComputedStyle(document.documentElement).getPropertyValue("--bg").trim()'), "#121923", "custom palette should set its validated background");
